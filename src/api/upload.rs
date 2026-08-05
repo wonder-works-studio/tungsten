@@ -120,7 +120,12 @@ impl RobloxClient {
     }
 
     async fn poll_operation(&self, operation_id: &str) -> Result<u64> {
-        const MAX_POLLS: u32 = 10;
+        // Backoff doubles up to a cap so a finished operation (audio
+        // moderation often completes in 10-60s) is noticed within
+        // MAX_POLL_DELAY instead of waiting out an ever-growing sleep.
+        // The overall window stays roughly 17 minutes.
+        const MAX_POLLS: u32 = 132;
+        const MAX_POLL_DELAY: Duration = Duration::from_secs(8);
         let mut delay = Duration::from_secs(1);
 
         for attempt in 0..MAX_POLLS {
@@ -162,7 +167,7 @@ impl RobloxClient {
                 };
             }
 
-            delay *= 2;
+            delay = (delay * 2).min(MAX_POLL_DELAY);
         }
 
         bail!(

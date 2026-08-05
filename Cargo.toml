@@ -49,6 +49,12 @@ vorbis_rs     = "0.5"
 name = "tungsten"
 path = "src/main.rs"
 
+# Audio and image codecs are unusably slow at opt-level 0. Keep dependencies
+# optimized in dev builds so `cargo run -- sync` performs like a release
+# build; Tungsten's own code still compiles fast and stays debuggable.
+[profile.dev.package."*"]
+opt-level = 3
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
