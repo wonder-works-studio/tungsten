@@ -172,8 +172,19 @@ fn finish_raw_file(
             // decode/encode round-trip.
             (Vec::new(), kind, src_ext.clone())
         } else {
+            let started = std::time::Instant::now();
             match transcode_to_ogg(&bytes, &src_ext, opts) {
-                Ok(Some(ogg)) => (ogg, AssetKind::Audio(AudioFormat::Ogg), "ogg".to_string()),
+                Ok(Some(ogg)) => {
+                    log!(
+                        debug,
+                        "Transcoded \"{}\" in {:.2}s ({} KB -> {} KB)",
+                        name,
+                        started.elapsed().as_secs_f64(),
+                        bytes.len() / 1024,
+                        ogg.len() / 1024
+                    );
+                    (ogg, AssetKind::Audio(AudioFormat::Ogg), "ogg".to_string())
+                }
                 // Already OGG — passed through untouched.
                 Ok(None) => (bytes, kind, src_ext.clone()),
                 Err(e) => {
