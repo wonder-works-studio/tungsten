@@ -30,6 +30,9 @@ auto_route_version = true  # Optional: fetch latest Studio version automatically
 path = "assets/icons/**/*"
 output_path = "src/Icons.luau"
 packable = true
+uniform_cells = true  # Optional: uniform cell grid packing (default: true)
+cell_size = 128       # Optional: exact cell size, or [width, height] (default: largest sprite)
+cell_fit = "contain"  # Optional: contain (default), cover, or stretch
 svg_scale = 2.0
 bleed = true  # Optional: enable alpha bleeding (default: true)
 
