@@ -105,18 +105,36 @@ Controls how Tungsten generates your Luau output files.
 
 Defines a set of assets to sync. You can define as many input blocks as you need — each one is identified by its name (e.g. `[inputs.packed_assets]`).
 
-| Field         | Type      | Description                                                                                                    |
-| ------------- | --------- | -------------------------------------------------------------------------------------------------------------- |
-| `path`        | `string`  | A glob pattern pointing to the assets to sync.                                                                 |
-| `output_path` | `string`  | Where Tungsten writes the generated Luau file.                                                                 |
-| `packable`    | `boolean` | Whether to pack matched assets into a spritesheet before uploading.                                            |
-| `svg_scale`   | `number`  | (Optional) Multiplier for SVG rasterization, defaults to 1.0.                                                  |
-| `bleed`       | `boolean` | (Optional) Enable alpha bleeding to prevent edge artifacts, defaults to `true`.                                |
-| `type`        | `string`  | The Roblox asset type (e.g., `decal`, `image`, `audio`, `model`). Overrides type inferred from file extension. |
+| Field           | Type                  | Description                                                                                                    |
+| --------------- | --------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `path`          | `string`              | A glob pattern pointing to the assets to sync.                                                                 |
+| `output_path`   | `string`              | Where Tungsten writes the generated Luau file.                                                                 |
+| `packable`      | `boolean`             | Whether to pack matched assets into a spritesheet before uploading.                                            |
+| `uniform_cells` | `boolean`             | (Optional) Resample every packed sprite to one exact cell size and pack on a fixed grid, defaults to `true`.   |
+| `cell_size`     | `number` or `[w, h]`  | (Optional) Exact cell dimensions for uniform packing. Defaults to the largest sprite width/height in the input. |
+| `cell_fit`      | `string`              | (Optional) `"contain"` (default), `"cover"`, or `"stretch"` — how sprites are resampled into the cell.        |
+| `svg_scale`     | `number`              | (Optional) Multiplier for SVG rasterization, defaults to 1.0.                                                  |
+| `bleed`         | `boolean`             | (Optional) Enable alpha bleeding to prevent edge artifacts, defaults to `true`.                                |
+| `type`          | `string`              | The Roblox asset type (e.g., `decal`, `image`, `audio`, `model`). Overrides type inferred from file extension. |
 
 :::note
 When `packable` is set to `true`, Tungsten packs the matched images into a spritesheet on the fly before uploading. The spritesheet is never saved to disk.
 :::
+
+#### Uniform cell normalization
+
+With `uniform_cells` enabled (the default for packable inputs), every sprite is resampled to one exact cell size before packing, and sprites are placed in name-sorted order on a fixed grid — sprite `k` sits at column `k % columns`, row `k / columns`. This guarantees identical render dimensions for every sprite regardless of source resolution: declare `cell_size = 128` and a stray 200px export can no longer ship as an oversized icon.
+
+```toml
+[inputs.icons]
+path = "assets/icons/**/*"
+output_path = "src/Icons.luau"
+packable = true
+cell_size = 128        # every sprite becomes exactly 128x128
+cell_fit = "contain"   # aspect preserved, centered on transparent padding
+```
+
+Cells may not exceed 1024×1024 (the maximum sheet size). Set `uniform_cells = false` to restore free-form rect packing.
 
 ---
 

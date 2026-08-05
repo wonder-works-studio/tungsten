@@ -34,6 +34,7 @@ pub async fn process_packed(
     ts_declaration: bool,
     compress_options: Option<&CompressOptions>,
     bleed: bool,
+    uniform: Option<&pack::UniformOptions>,
     target: Target,
     dry_run: bool,
     creator: &Creator,
@@ -111,7 +112,12 @@ pub async fn process_packed(
     if !plain_images.is_empty() {
         log!(info, "Packing {} image(s)...", plain_images.len());
 
-        let spritesheets = match pack::pack(plain_images) {
+        let pack_result = match uniform {
+            Some(opts) => pack::pack_uniform(plain_images, opts),
+            None => pack::pack(plain_images),
+        };
+
+        let spritesheets = match pack_result {
             Ok(s) => s,
             Err(e) => {
                 clear_progress_line();
