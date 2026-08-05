@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.2.1]
+
+### Fixed
+
+- Processed audio re-uploaded on every sync: the upload cache keyed on encoded OGG bytes, which vary per encode due to randomized Ogg stream serials. Cache now keys on source bytes plus a settings fingerprint, checked before transcoding — unchanged files skip the decode/encode round-trip and the upload entirely. Existing audio lockfile entries re-upload once, then cache correctly
+- Flaky test race on the shared `.env` file that intermittently failed CI
+
+### Changed
+
+- Dependencies are compiled at opt-level 3 in dev builds; audio and image codecs were unusably slow at opt-level 0
+- Upload operation polling caps its backoff at 8 seconds (window still ~17 minutes), so finished audio moderation is noticed promptly
+- Per-file transcode timing is logged at debug level (`--verbose`)
+- Dry runs skip audio transcoding since the bytes are never uploaded or copied
+
 ## [v3.2.0]
 
 ### Added
