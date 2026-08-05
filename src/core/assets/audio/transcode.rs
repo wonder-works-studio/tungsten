@@ -15,6 +15,22 @@ pub struct ResolvedAudioOptions {
     pub normalize: Option<ResolvedNormalizeOptions>,
 }
 
+impl ResolvedAudioOptions {
+    /// Stable string identifying these settings. Mixed into lockfile cache
+    /// keys so changing the settings re-processes and re-uploads, while
+    /// unchanged sources skip the decode/encode round-trip entirely.
+    pub fn fingerprint(&self) -> String {
+        let profile = match self.profile {
+            VorbisProfile::Quality(q) => format!("q{}", q),
+            VorbisProfile::Bitrate(kbps) => format!("b{}", kbps),
+        };
+        match &self.normalize {
+            Some(n) => format!("{};n{},{}", profile, n.target_lufs, n.true_peak_ceiling),
+            None => profile,
+        }
+    }
+}
+
 /// Transcode an audio file of any supported container to OGG Vorbis,
 /// optionally normalizing loudness on the way through.
 ///
