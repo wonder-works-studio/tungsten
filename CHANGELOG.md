@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.2.0]
+
+### Added
+
+- Uniform cell normalization for packed inputs: every sprite is resampled to one exact cell size and packed on a fixed grid in name-sorted order, so sprite `k` always sits at `(k % columns, k / columns)` and renders at identical dimensions regardless of source resolution
+- `uniform_cells` (default: `true`), `cell_size` (single number or `[width, height]`) and `cell_fit` (`contain`/`cover`/`stretch`) input configuration fields
+- OGG transcoding via `[inputs.<name>.audio]`: decodes WAV, MP3, M4A/AAC and FLAC via symphonia and re-encodes to OGG Vorbis via vorbis_rs — pure Rust, no ffmpeg dependency; OGG sources are passed through untouched
+- `vorbis_quality` (libvorbis `-1.0..=10.0` scale, default 5.0) and `bitrate` (kbps VBR target) audio encoder options
+- Audio loudness normalization via `[inputs.<name>.audio.normalize]`: measures integrated loudness per EBU R128 / ITU-R BS.1770-4 (K-weighted, gated at -70 LUFS absolute and -10 LU relative) and applies gain to hit `target_lufs` (default -14.0), capped by `true_peak_ceiling` (default -1.0 dBTP)
+- `m4a`/`aac` audio extensions are now recognized
+- Warning when uploading audio formats Roblox rejects (WAV, FLAC, M4A) without transcoding enabled
+
+### Changed
+
+- **Breaking-ish:** packable inputs now default to uniform-cell grid packing; set `uniform_cells = false` per input to restore free-form rect packing
+
 ## [v3.1.0]
 
 ### Added
