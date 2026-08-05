@@ -357,6 +357,7 @@ mod tests {
             false,
             None,
             false,
+            None, // free-form rect packing; uniform grid covered by pack tests
             Target::Debug,
             true, // dry run: no uploads or copies, codegen only
             &creator,
