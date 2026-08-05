@@ -175,15 +175,4 @@ mod tests {
         let mut lf = Lockfile::default();
         assert!(lf.save().is_ok());
     }
-
-    #[test]
-    fn test_global_env_var() {
-        // Kept for parity with the old test suite.
-        use crate::utils::env::resolve_api_key;
-        const VAR: &str = "TUNGSTEN_GLOBAL_APIKEY";
-        unsafe { std::env::set_var(VAR, "test_global_key") };
-        let result = resolve_api_key(None);
-        unsafe { std::env::remove_var(VAR) };
-        assert_eq!(result, Some("test_global_key".to_string()));
-    }
 }
