@@ -39,9 +39,7 @@ pub fn measure(pcm: &DecodedAudio) -> Result<LoudnessStats> {
 
     let mut true_peak: f64 = 0.0;
     for ch in 0..pcm.channels {
-        let peak = meter
-            .true_peak(ch)
-            .context("Failed to compute true peak")?;
+        let peak = meter.true_peak(ch).context("Failed to compute true peak")?;
         true_peak = true_peak.max(peak);
     }
 
@@ -55,7 +53,10 @@ pub fn measure(pcm: &DecodedAudio) -> Result<LoudnessStats> {
 /// true peak ceiling. Returns the gain applied in dB, or `None` when the
 /// stream is effectively silent (below the -70 LUFS absolute gate) and left
 /// untouched.
-pub fn normalize(pcm: &mut DecodedAudio, options: &ResolvedNormalizeOptions) -> Result<Option<f64>> {
+pub fn normalize(
+    pcm: &mut DecodedAudio,
+    options: &ResolvedNormalizeOptions,
+) -> Result<Option<f64>> {
     let stats = measure(pcm)?;
 
     // loudness_global returns -inf for fully gated (silent) input.
