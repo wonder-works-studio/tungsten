@@ -12,7 +12,8 @@ use crate::api::sync::debug::DebugSync;
 use crate::api::sync::roblox::Creator;
 use crate::api::sync::studio::StudioSync;
 use crate::api::upload::{RobloxClient, UploadParams};
-use crate::core::assets::asset::{self, AssetKind, AssetMeta, WebAsset, is_animation_file};
+use crate::core::assets::asset::{self, AssetKind, AssetMeta, AudioFormat, WebAsset, is_animation_file};
+use crate::core::assets::audio::transcode::{ResolvedAudioOptions, transcode_to_ogg};
 use crate::core::assets::img::compress::CompressOptions;
 use crate::core::assets::img::convert;
 use crate::core::postsync::codegen::{self, CodegenEntry};
@@ -30,6 +31,9 @@ pub struct RawPending {
     pub bytes: Vec<u8>,
     pub hash: String,
     pub kind: AssetKind,
+    /// Output file extension. Matches the source extension unless the asset
+    /// was transcoded (e.g. "wav" becomes "ogg").
+    pub ext: String,
     pub display_name: String,
     pub description: String,
 }
@@ -70,6 +74,7 @@ fn process_single_raw_file(
     path: &PathBuf,
     base_path: &str,
     compress_options: Option<&CompressOptions>,
+    audio_options: Option<&ResolvedAudioOptions>,
 ) -> Result<RawPending, ProcessingError> {
     // Read the file
     let data = std::fs::read(path).map_err(|e| ProcessingError {
@@ -106,7 +111,37 @@ fn process_single_raw_file(
         }
     };
 
-    let data = maybe_compress(data, &src_ext, compress_options);
+    // Transcode audio to OGG Vorbis when the input opts in.
+    let (data, kind, out_ext) = if let (AssetKind::Audio(_), Some(opts)) = (kind, audio_options) {
+        match transcode_to_ogg(&data, &src_ext, opts) {
+            Ok(Some(ogg)) => (ogg, AssetKind::Audio(AudioFormat::Ogg), "ogg".to_string()),
+            // Already OGG — passed through untouched.
+            Ok(None) => (data, kind, src_ext.clone()),
+            Err(e) => {
+                return Err(ProcessingError {
+                    name: path.display().to_string(),
+                    error: e.context(format!(
+                        "Failed to transcode \"{}\" to OGG Vorbis",
+                        path.display()
+                    )),
+                });
+            }
+        }
+    } else {
+        if let AssetKind::Audio(format) = kind
+            && !format.roblox_supported()
+        {
+            clear_progress_line();
+            log!(
+                warn,
+                "\"{}\" is a format Roblox does not accept — add an [inputs.<name>.audio] section to transcode it to OGG",
+                path.display()
+            );
+        }
+        (data, kind, src_ext.clone())
+    };
+
+    let data = maybe_compress(data, &out_ext, compress_options);
     let hash = hash_image(&data);
     let meta = AssetMeta::load_for(path).unwrap_or_default();
     let name = {
@@ -125,6 +160,7 @@ fn process_single_raw_file(
         bytes: data,
         hash,
         kind,
+        ext: out_ext,
         display_name,
         description,
     })
@@ -147,6 +183,7 @@ pub async fn process_raw(
     strip_extension: bool,
     ts_declaration: bool,
     compress_options: Option<&CompressOptions>,
+    audio_options: Option<&ResolvedAudioOptions>,
     target: Target,
     dry_run: bool,
     creator: &Creator,
@@ -166,7 +203,7 @@ pub async fn process_raw(
     // Process files in parallel
     let pending_results: Vec<Result<RawPending, ProcessingError>> = paths
         .into_par_iter()
-        .map(|path| process_single_raw_file(&path, base_path, compress_options))
+        .map(|path| process_single_raw_file(&path, base_path, compress_options, audio_options))
         .collect::<Vec<_>>();
 
     // Collect results and count errors
@@ -225,11 +262,10 @@ pub async fn process_raw(
                     ));
                 } else {
                     dispatched += 1;
-                    let ext = p.path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    let rel = if ext.is_empty() {
+                    let rel = if p.ext.is_empty() {
                         p.name.clone()
                     } else {
-                        format!("{}.{}", p.name, ext)
+                        format!("{}.{}", p.name, p.ext)
                     };
                     let uri = if let Some(ss) = studio_sync {
                         match ss.copy_asset(&rel, &p.bytes) {
@@ -263,7 +299,7 @@ pub async fn process_raw(
                 let rel = format!(
                     "{}.{}",
                     p.name,
-                    p.path.extension().and_then(|e| e.to_str()).unwrap_or("bin")
+                    if p.ext.is_empty() { "bin" } else { &p.ext }
                 );
                 if let Some(ds) = debug_sync
                     && let Err(e) = ds.copy_asset(&rel, &p.bytes)
@@ -300,6 +336,7 @@ pub async fn process_raw(
                 let p_path = p.path.clone();
                 let p_name = p.name.clone();
                 let p_hash = p.hash.clone();
+                let p_ext = p.ext.clone();
                 let p_display_name = p.display_name.clone();
                 let p_description = p.description.clone();
                 let p_bytes = p.bytes.clone();
@@ -308,11 +345,18 @@ pub async fn process_raw(
                 let semaphore_clone = semaphore.clone();
                 upload_tasks.spawn(async move {
                     let _permit = semaphore_clone.acquire_owned().await;
-                    let file_name = p_path
-                        .file_name()
+                    // Build the upload file name from the output extension,
+                    // which may differ from the source after transcoding.
+                    let stem = p_path
+                        .file_stem()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .into_owned();
+                    let file_name = if p_ext.is_empty() {
+                        stem
+                    } else {
+                        format!("{}.{}", stem, p_ext)
+                    };
                     let id = c_arc
                         .upload(UploadParams {
                             file_name,

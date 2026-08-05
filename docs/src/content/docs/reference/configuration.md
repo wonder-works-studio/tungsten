@@ -52,6 +52,10 @@ keep_metadata = false
 path = "assets/audio/**/*"
 output_path = "src/Audio.luau"
 
+# Transcode every audio file to OGG Vorbis before upload
+[inputs.audio.audio]
+vorbis_quality = 5.0
+
 [inputs.models]
 path = "assets/models/**/*"
 output_path = "src/Models.luau"
@@ -129,3 +133,22 @@ Enables and configures image optimization for a specific input group. When this 
 | `jpeg_quality`  | `number`  | Quality of the JPEG image (0-100), defaults to 80.                    |
 | `png_quality`   | `number`  | Quality of the PNG image (0-100), defaults to 80.                     |
 | `keep_metadata` | `boolean` | Whether to keep metadata in the compressed image, defaults to `true`. |
+
+---
+
+### `[inputs.<name>.audio]`
+
+Enables audio transcoding for a specific input group. When this table is present, every audio file (WAV, MP3, M4A/AAC, FLAC) is decoded and re-encoded to OGG Vorbis before upload — pure Rust, no ffmpeg required. Sources that are already OGG are passed through untouched.
+
+This also lets your repository hold lossless masters: Roblox won't accept a WAV upload, but with transcoding enabled Tungsten converts it at build time, the same source/artifact split it already applies to SVG.
+
+| Field            | Type     | Description                                                                        |
+| ---------------- | -------- | ----------------------------------------------------------------------------------- |
+| `vorbis_quality` | `number` | Vorbis VBR quality, `-1.0` to `10.0`. Defaults to `5.0` (roughly 160 kbps stereo). |
+| `bitrate`        | `number` | Target VBR bitrate in kbps. Takes precedence over `vorbis_quality`.                |
+
+An empty `[inputs.<name>.audio]` table enables transcoding with the defaults.
+
+:::note
+Without this section, WAV, FLAC and M4A files are uploaded as-is — and Roblox rejects them. Tungsten logs a warning when this happens.
+:::

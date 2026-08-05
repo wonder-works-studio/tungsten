@@ -192,6 +192,8 @@ pub async fn run(
         let base_path = glob_base(&input.path);
         let compress_options = input.resolved_compress_options();
         let compress_opts_ref = compress_options.as_ref();
+        let audio_options = input.resolved_audio_options();
+        let audio_opts_ref = audio_options.as_ref();
         let bleed = input.resolved_bleed();
 
         let (image_paths, other_paths): (Vec<_>, Vec<_>) = paths.into_iter().partition(|p| {
@@ -214,6 +216,7 @@ pub async fn run(
                 strip_extension,
                 ts_declaration,
                 compress_opts_ref,
+                audio_opts_ref,
                 target,
                 dry_run,
                 &creator,
