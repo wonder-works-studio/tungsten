@@ -6,6 +6,9 @@ use std::path::Path;
 use toml;
 
 use crate::core::assets::asset::WebAsset;
+use crate::core::assets::audio::encode::VorbisProfile;
+use crate::core::assets::audio::loudness::ResolvedNormalizeOptions;
+use crate::core::assets::audio::transcode::ResolvedAudioOptions;
 use crate::core::assets::img::compress::CompressOptions as ResolvedCompressOptions;
 use crate::log;
 
@@ -123,6 +126,80 @@ impl CellSize {
     }
 }
 
+/// Audio processing settings applied before upload.
+///
+/// When this table is present, every audio file in the input is transcoded
+/// to OGG Vorbis (decoded via symphonia, re-encoded via vorbis_rs). Sources
+/// that are already OGG are passed through untouched.
+///
+/// Example:
+/// ```toml
+/// [inputs.sounds]
+/// path = "assets/sounds/**/*"
+/// output_path = "src/sounds.luau"
+///
+/// [inputs.sounds.audio]
+/// vorbis_quality = 5.0
+/// ```
+#[derive(Deserialize, Debug, Clone)]
+pub struct AudioOptions {
+    /// Vorbis VBR quality on the libvorbis `-1.0..=10.0` scale.
+    /// Defaults to 5.0 (roughly 160 kbps stereo).
+    pub vorbis_quality: Option<f32>,
+    /// Target VBR bitrate in kbps. Takes precedence over `vorbis_quality`.
+    pub bitrate: Option<u32>,
+    /// If present, normalize loudness before encoding.
+    /// Omit the section entirely to keep source loudness.
+    pub normalize: Option<NormalizeOptions>,
+}
+
+impl AudioOptions {
+    /// Merge into `ResolvedAudioOptions`, filling gaps with defaults.
+    pub fn resolve(&self) -> ResolvedAudioOptions {
+        let profile = match self.bitrate {
+            Some(kbps) => VorbisProfile::Bitrate(kbps),
+            None => VorbisProfile::Quality(self.vorbis_quality.unwrap_or(5.0)),
+        };
+        ResolvedAudioOptions {
+            profile,
+            normalize: self.normalize.as_ref().map(|n| n.resolve()),
+        }
+    }
+}
+
+/// Loudness normalization settings.
+///
+/// Integrated loudness is measured per EBU R128 / ITU-R BS.1770-4
+/// (K-weighted, gated at -70 LUFS absolute and -10 LU relative) and gain is
+/// applied to hit the target, capped by the true peak ceiling.
+///
+/// Example:
+/// ```toml
+/// [inputs.sounds.audio.normalize]
+/// target_lufs = -14.0
+/// true_peak_ceiling = -1.0
+/// ```
+#[derive(Deserialize, Debug, Clone)]
+pub struct NormalizeOptions {
+    /// Integrated loudness target in LUFS. Defaults to -14.0
+    /// (the common streaming loudness target).
+    pub target_lufs: Option<f64>,
+    /// True peak ceiling in dBTP. Gain is reduced so the output never
+    /// exceeds this, even if that means missing the loudness target.
+    /// Defaults to -1.0.
+    pub true_peak_ceiling: Option<f64>,
+}
+
+impl NormalizeOptions {
+    /// Merge into `ResolvedNormalizeOptions`, filling gaps with defaults.
+    pub fn resolve(&self) -> ResolvedNormalizeOptions {
+        ResolvedNormalizeOptions {
+            target_lufs: self.target_lufs.unwrap_or(-14.0),
+            true_peak_ceiling: self.true_peak_ceiling.unwrap_or(-1.0),
+        }
+    }
+}
+
 /// Studio-specific configuration.
 #[derive(Deserialize, Default)]
 pub struct StudioConfig {
@@ -189,6 +266,9 @@ pub struct InputConfig {
     /// If present, compress images before upload using libcaesium.
     /// Omit the section entirely to skip compression.
     pub compress_options: Option<CompressOptions>,
+    /// If present, transcode audio files to OGG Vorbis before upload.
+    /// Omit the section entirely to upload audio as-is.
+    pub audio: Option<AudioOptions>,
     /// A map of paths relative to the input path to existing assets on Roblox.
     /// Keys are relative paths (using forward slashes), values are asset IDs.
     /// These assets are included in generated code without uploading.
@@ -297,6 +377,12 @@ impl InputConfig {
     /// Returns the configured cell fit policy string (defaults to `"contain"`).
     pub fn resolved_cell_fit(&self) -> &str {
         self.cell_fit.as_deref().unwrap_or("contain")
+    }
+
+    /// Returns resolved audio options if audio processing is enabled for
+    /// this input, or `None` if the `audio` section was omitted.
+    pub fn resolved_audio_options(&self) -> Option<ResolvedAudioOptions> {
+        self.audio.as_ref().map(|o| o.resolve())
     }
 }
 
@@ -558,6 +644,141 @@ mod tests {
             input.compress_options.is_some(),
             "empty compress_options section should still enable compression"
         );
+    }
+
+    #[test]
+    fn test_audio_options_absent_means_no_transcoding() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        assert!(input.audio.is_none());
+        assert!(input.resolved_audio_options().is_none());
+    }
+
+    #[test]
+    fn test_empty_audio_section_enables_transcoding_with_defaults() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio]
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        assert_eq!(
+            opts.profile,
+            crate::core::assets::audio::encode::VorbisProfile::Quality(5.0)
+        );
+    }
+
+    #[test]
+    fn test_audio_bitrate_takes_precedence_over_quality() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio]
+            vorbis_quality = 8.0
+            bitrate = 96
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        assert_eq!(
+            opts.profile,
+            crate::core::assets::audio::encode::VorbisProfile::Bitrate(96)
+        );
+    }
+
+    #[test]
+    fn test_normalize_absent_by_default() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio]
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        assert!(opts.normalize.is_none());
+    }
+
+    #[test]
+    fn test_empty_normalize_section_uses_defaults() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio.normalize]
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        let normalize = opts.normalize.unwrap();
+        assert_eq!(normalize.target_lufs, -14.0);
+        assert_eq!(normalize.true_peak_ceiling, -1.0);
+    }
+
+    #[test]
+    fn test_normalize_custom_levels() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio]
+            vorbis_quality = 6.0
+
+            [inputs.sounds.audio.normalize]
+            target_lufs = -16.0
+            true_peak_ceiling = -2.0
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        let normalize = opts.normalize.unwrap();
+        assert_eq!(normalize.target_lufs, -16.0);
+        assert_eq!(normalize.true_peak_ceiling, -2.0);
     }
 
     #[test]

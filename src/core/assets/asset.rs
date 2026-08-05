@@ -19,6 +19,7 @@ pub enum AudioFormat {
     Ogg,
     Flac,
     Wav,
+    M4a,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,14 @@ pub struct WebAsset {
     pub id: u64,
 }
 
+impl AudioFormat {
+    /// Whether Roblox's upload API accepts this format directly.
+    /// WAV, FLAC and M4A/AAC sources must be transcoded before upload.
+    pub fn roblox_supported(&self) -> bool {
+        matches!(self, AudioFormat::Mp3 | AudioFormat::Ogg)
+    }
+}
+
 impl AssetKind {
     /// The string Roblox's asset API expects for `assetType`.
     pub fn api_type(&self) -> &'static str {
@@ -72,6 +81,7 @@ impl AssetKind {
             AssetKind::Audio(AudioFormat::Ogg) => "audio/ogg",
             AssetKind::Audio(AudioFormat::Flac) => "audio/flac",
             AssetKind::Audio(AudioFormat::Wav) => "audio/wav",
+            AssetKind::Audio(AudioFormat::M4a) => "audio/mp4",
 
             AssetKind::Model(ModelFormat::Fbx) => "model/fbx",
             AssetKind::Model(ModelFormat::GltfJson) => "model/gltf+json",
@@ -104,6 +114,7 @@ pub fn kind_from_ext(ext: &str) -> Option<AssetKind> {
         "ogg" => Some(AssetKind::Audio(AudioFormat::Ogg)),
         "flac" => Some(AssetKind::Audio(AudioFormat::Flac)),
         "wav" => Some(AssetKind::Audio(AudioFormat::Wav)),
+        "m4a" | "aac" => Some(AssetKind::Audio(AudioFormat::M4a)),
 
         "fbx" => Some(AssetKind::Model(ModelFormat::Fbx)),
         "gltf" => Some(AssetKind::Model(ModelFormat::GltfJson)),
@@ -287,6 +298,23 @@ mod tests {
             kind_from_ext("wav"),
             Some(AssetKind::Audio(AudioFormat::Wav))
         );
+        assert_eq!(
+            kind_from_ext("m4a"),
+            Some(AssetKind::Audio(AudioFormat::M4a))
+        );
+        assert_eq!(
+            kind_from_ext("aac"),
+            Some(AssetKind::Audio(AudioFormat::M4a))
+        );
+    }
+
+    #[test]
+    fn test_roblox_supported_audio_formats() {
+        assert!(AudioFormat::Mp3.roblox_supported());
+        assert!(AudioFormat::Ogg.roblox_supported());
+        assert!(!AudioFormat::Wav.roblox_supported());
+        assert!(!AudioFormat::Flac.roblox_supported());
+        assert!(!AudioFormat::M4a.roblox_supported());
     }
 
     #[test]
