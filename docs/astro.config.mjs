@@ -5,7 +5,7 @@ import starlightThemeNova from "starlight-theme-nova";
 
 // https://astro.build/config
 export default defineConfig({
-  site: "https://pwnwrkz.github.io",
+  site: "https://wonder-works-studio.github.io",
   base: "/tungsten",
   integrations: [
     starlight({
@@ -22,7 +22,7 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/pwnwrkz/tungsten",
+          href: "https://github.com/wonder-works-studio/tungsten",
         },
       ],
       sidebar: [
