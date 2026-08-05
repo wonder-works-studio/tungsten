@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking-ish:** packable inputs now default to uniform-cell grid packing; set `uniform_cells = false` per input to restore free-form rect packing
 
+### Fixed
+
+- Packed inputs generated an empty Luau table on every target since v3.1.0: a shadowed vec dropped all sprite codegen entries before they reached `write_codegen`
+
 ## [v3.1.0]
 
 ### Added
