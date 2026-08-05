@@ -12,7 +12,9 @@ use crate::api::sync::debug::DebugSync;
 use crate::api::sync::roblox::Creator;
 use crate::api::sync::studio::StudioSync;
 use crate::api::upload::{RobloxClient, UploadParams};
-use crate::core::assets::asset::{self, AssetKind, AssetMeta, AudioFormat, WebAsset, is_animation_file};
+use crate::core::assets::asset::{
+    self, AssetKind, AssetMeta, AudioFormat, WebAsset, is_animation_file,
+};
 use crate::core::assets::audio::transcode::{ResolvedAudioOptions, transcode_to_ogg};
 use crate::core::assets::img::compress::CompressOptions;
 use crate::core::assets::img::convert;
