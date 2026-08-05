@@ -19,7 +19,7 @@ use crate::core::assets::audio::transcode::{ResolvedAudioOptions, transcode_to_o
 use crate::core::assets::img::compress::CompressOptions;
 use crate::core::assets::img::convert;
 use crate::core::postsync::codegen::{self, CodegenEntry};
-use crate::core::postsync::lockfile::{Lockfile, hash_image};
+use crate::core::postsync::lockfile::{Lockfile, hash_image, hash_parts};
 use crate::log;
 use crate::utils::logger::{clear_progress_line, progress};
 
@@ -70,16 +70,27 @@ fn maybe_compress(
     }
 }
 
-/// Process a single raw file for asset processing (synchronous version for parallel processing)
-#[inline]
-fn process_single_raw_file(
+/// A file that has been read and classified, but not yet processed.
+struct PreparedFile {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    kind: AssetKind,
+    src_ext: String,
+    name: String,
+    /// Source-based lockfile key for audio inputs with processing enabled.
+    /// Keyed on the source bytes and settings — not the encoded output —
+    /// so unchanged files can skip the decode/encode round-trip entirely
+    /// and non-deterministic encoder output can't invalidate the cache.
+    audio_cache_key: Option<String>,
+}
+
+/// Read and classify a file without doing any expensive processing.
+fn prepare_raw_file(
     path: &PathBuf,
     base_path: &str,
-    compress_options: Option<&CompressOptions>,
     audio_options: Option<&ResolvedAudioOptions>,
-) -> Result<RawPending, ProcessingError> {
-    // Read the file
-    let data = std::fs::read(path).map_err(|e| ProcessingError {
+) -> Result<PreparedFile, ProcessingError> {
+    let bytes = std::fs::read(path).map_err(|e| ProcessingError {
         name: path.display().to_string(),
         error: anyhow::anyhow!("Failed to read \"{}\": {}", path.display(), e),
     })?;
@@ -113,20 +124,67 @@ fn process_single_raw_file(
         }
     };
 
+    let name = {
+        let rel = relative_path(path, base_path);
+        Path::new(&rel)
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+
+    let audio_cache_key = match (kind, audio_options) {
+        (AssetKind::Audio(_), Some(opts)) => {
+            Some(hash_parts(&[&bytes, opts.fingerprint().as_bytes()]))
+        }
+        _ => None,
+    };
+
+    Ok(PreparedFile {
+        path: path.clone(),
+        bytes,
+        kind,
+        src_ext,
+        name,
+        audio_cache_key,
+    })
+}
+
+/// Finish processing a prepared file: transcode, compress and hash.
+fn finish_raw_file(
+    prep: PreparedFile,
+    compress_options: Option<&CompressOptions>,
+    audio_options: Option<&ResolvedAudioOptions>,
+    dry_run: bool,
+) -> Result<RawPending, ProcessingError> {
+    let PreparedFile {
+        path,
+        bytes,
+        kind,
+        src_ext,
+        name,
+        audio_cache_key,
+    } = prep;
+
     // Transcode audio to OGG Vorbis when the input opts in.
     let (data, kind, out_ext) = if let (AssetKind::Audio(_), Some(opts)) = (kind, audio_options) {
-        match transcode_to_ogg(&data, &src_ext, opts) {
-            Ok(Some(ogg)) => (ogg, AssetKind::Audio(AudioFormat::Ogg), "ogg".to_string()),
-            // Already OGG — passed through untouched.
-            Ok(None) => (data, kind, src_ext.clone()),
-            Err(e) => {
-                return Err(ProcessingError {
-                    name: path.display().to_string(),
-                    error: e.context(format!(
-                        "Failed to transcode \"{}\" to OGG Vorbis",
-                        path.display()
-                    )),
-                });
+        if dry_run {
+            // Dry runs never upload or copy the bytes — skip the expensive
+            // decode/encode round-trip.
+            (Vec::new(), kind, src_ext.clone())
+        } else {
+            match transcode_to_ogg(&bytes, &src_ext, opts) {
+                Ok(Some(ogg)) => (ogg, AssetKind::Audio(AudioFormat::Ogg), "ogg".to_string()),
+                // Already OGG — passed through untouched.
+                Ok(None) => (bytes, kind, src_ext.clone()),
+                Err(e) => {
+                    return Err(ProcessingError {
+                        name: path.display().to_string(),
+                        error: e.context(format!(
+                            "Failed to transcode \"{}\" to OGG Vorbis",
+                            path.display()
+                        )),
+                    });
+                }
             }
         }
     } else {
@@ -140,25 +198,27 @@ fn process_single_raw_file(
                 path.display()
             );
         }
-        (data, kind, src_ext.clone())
+        (bytes, kind, src_ext.clone())
     };
 
-    let data = maybe_compress(data, &out_ext, compress_options);
-    let hash = hash_image(&data);
-    let meta = AssetMeta::load_for(path).unwrap_or_default();
-    let name = {
-        let rel = relative_path(path, base_path);
-        Path::new(&rel)
-            .with_extension("")
-            .to_string_lossy()
-            .replace('\\', "/")
+    let data = if data.is_empty() {
+        data
+    } else {
+        maybe_compress(data, &out_ext, compress_options)
     };
+    // Processed audio is keyed by source bytes and settings; everything else
+    // by its final bytes.
+    let hash = match audio_cache_key {
+        Some(key) => key,
+        None => hash_image(&data),
+    };
+    let meta = AssetMeta::load_for(&path).unwrap_or_default();
     let display_name = meta.resolve_name(&name).to_string();
     let description = meta.resolve_description("Uploaded by Tungsten").to_string();
 
     Ok(RawPending {
         name,
-        path: path.clone(),
+        path,
         bytes: data,
         hash,
         kind,
@@ -202,16 +262,66 @@ pub async fn process_raw(
     let mut codegen_entries: Vec<CodegenEntry> = Vec::new();
     seed_web_assets(web_assets, base_path, strip_extension, &mut codegen_entries);
 
-    // Process files in parallel
-    let pending_results: Vec<Result<RawPending, ProcessingError>> = paths
+    // Phase 1: read and classify files in parallel (no expensive work yet).
+    let prepared_results: Vec<Result<PreparedFile, ProcessingError>> = paths
         .into_par_iter()
-        .map(|path| process_single_raw_file(&path, base_path, compress_options, audio_options))
+        .map(|path| prepare_raw_file(&path, base_path, audio_options))
         .collect::<Vec<_>>();
 
-    // Collect results and count errors
-    let mut pending: Vec<RawPending> = Vec::new();
     let mut errors = 0u32;
-    for result in pending_results {
+    let mut prepared: Vec<PreparedFile> = Vec::new();
+    for result in prepared_results {
+        match result {
+            Ok(p) => prepared.push(p),
+            Err(e) => {
+                clear_progress_line();
+                log!(warn, "Failed to prepare file \"{}\": {}", e.name, e.error);
+                errors += 1;
+            }
+        }
+    }
+
+    // Phase 2: serve already-uploaded audio straight from the lockfile so
+    // unchanged files skip the decode/encode round-trip entirely.
+    let mut pending: Vec<RawPending> = Vec::new();
+    let mut to_process: Vec<PreparedFile> = Vec::new();
+    for prep in prepared {
+        let cached = prep
+            .audio_cache_key
+            .as_ref()
+            .filter(|_| target == Target::Cloud && !dry_run)
+            .and_then(|key| lockfile.get(input_name, key).map(|id| (key.clone(), id)));
+        match cached {
+            Some((key, id)) => {
+                log!(
+                    debug,
+                    "{}: unchanged, skipping transcode (cached asset {})",
+                    prep.name,
+                    id
+                );
+                let meta = AssetMeta::load_for(&prep.path).unwrap_or_default();
+                pending.push(RawPending {
+                    display_name: meta.resolve_name(&prep.name).to_string(),
+                    description: meta.resolve_description("Uploaded by Tungsten").to_string(),
+                    name: prep.name,
+                    path: prep.path,
+                    // Never uploaded or copied — the cached ID is reused.
+                    bytes: Vec::new(),
+                    hash: key,
+                    kind: prep.kind,
+                    ext: prep.src_ext,
+                });
+            }
+            None => to_process.push(prep),
+        }
+    }
+
+    // Phase 3: transcode, compress and hash the remainder in parallel.
+    let finished_results: Vec<Result<RawPending, ProcessingError>> = to_process
+        .into_par_iter()
+        .map(|prep| finish_raw_file(prep, compress_options, audio_options, dry_run))
+        .collect::<Vec<_>>();
+    for result in finished_results {
         match result {
             Ok(p) => pending.push(p),
             Err(e) => {
@@ -409,4 +519,125 @@ pub async fn process_raw(
         &mut errors,
     );
     errors
+}
+
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::sync::roblox::UserCreator;
+    use crate::core::assets::audio::encode::VorbisProfile;
+    use crate::core::assets::audio::transcode::tests::{make_wav, sine_samples};
+
+    #[tokio::test]
+    async fn test_cached_audio_skips_transcode_and_reupload() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wav_path = tmp.path().join("boom.wav");
+        let wav = make_wav(&sine_samples(0.3, 22050), 2, 22050);
+        std::fs::write(&wav_path, &wav).unwrap();
+
+        let options = ResolvedAudioOptions {
+            profile: VorbisProfile::Quality(5.0),
+            normalize: None,
+        };
+        // Cache key is source bytes + settings fingerprint, computed before
+        // any transcoding happens.
+        let key = hash_parts(&[&wav, options.fingerprint().as_bytes()]);
+
+        let mut lockfile = Lockfile::default();
+        lockfile.set("sounds", key, 777);
+
+        let output_path = tmp.path().join("sounds.luau");
+        let creator = Creator::User(UserCreator {
+            user_id: "1".to_string(),
+        });
+
+        // No client is provided, so an upload attempt would emit ID 0.
+        // Seeing 777 in the codegen proves the lockfile short-circuit ran
+        // before any transcode/upload work.
+        let errors = process_raw(
+            "sounds",
+            vec![wav_path],
+            &tmp.path().to_string_lossy().replace('\\', "/"),
+            output_path.to_str().unwrap(),
+            "flat",
+            true,
+            false,
+            None,
+            Some(&options),
+            Target::Cloud,
+            false,
+            &creator,
+            None,
+            &None,
+            &None,
+            &None,
+            &mut lockfile,
+            &mut None,
+            1,
+            &HashMap::new(),
+        )
+        .await;
+
+        assert_eq!(errors, 0);
+        let luau = std::fs::read_to_string(&output_path).unwrap();
+        assert!(luau.contains("rbxassetid://777"), "{}", luau);
+    }
+
+    #[tokio::test]
+    async fn test_changed_audio_settings_miss_the_cache() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let wav_path = tmp.path().join("boom.wav");
+        let wav = make_wav(&sine_samples(0.3, 22050), 2, 22050);
+        std::fs::write(&wav_path, &wav).unwrap();
+
+        // Lockfile entry was recorded with different settings.
+        let old_options = ResolvedAudioOptions {
+            profile: VorbisProfile::Quality(5.0),
+            normalize: None,
+        };
+        let old_key = hash_parts(&[&wav, old_options.fingerprint().as_bytes()]);
+        let mut lockfile = Lockfile::default();
+        lockfile.set("sounds", old_key, 777);
+
+        let new_options = ResolvedAudioOptions {
+            profile: VorbisProfile::Bitrate(96),
+            normalize: None,
+        };
+
+        let output_path = tmp.path().join("sounds.luau");
+        let creator = Creator::User(UserCreator {
+            user_id: "1".to_string(),
+        });
+
+        let errors = process_raw(
+            "sounds",
+            vec![wav_path],
+            &tmp.path().to_string_lossy().replace('\\', "/"),
+            output_path.to_str().unwrap(),
+            "flat",
+            true,
+            false,
+            None,
+            Some(&new_options),
+            Target::Cloud,
+            false,
+            &creator,
+            None,
+            &None,
+            &None,
+            &None,
+            &mut lockfile,
+            &mut None,
+            1,
+            &HashMap::new(),
+        )
+        .await;
+
+        assert_eq!(errors, 0);
+        let luau = std::fs::read_to_string(&output_path).unwrap();
+        // Cache must miss: without a client the fresh upload records ID 0.
+        assert!(luau.contains("rbxassetid://0"), "{}", luau);
+    }
 }

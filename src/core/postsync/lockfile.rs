@@ -140,9 +140,18 @@ impl Lockfile {
 /// SHA-256 hex digest of raw bytes.
 /// Used as the cache key in the lockfile.
 pub fn hash_image(data: &[u8]) -> String {
+    hash_parts(&[data])
+}
+
+/// SHA-256 hex digest of several byte slices hashed as one stream.
+/// Used to build cache keys that mix content with processing settings.
+pub fn hash_parts(parts: &[&[u8]]) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(data);
-    hex::encode(digest)
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part);
+    }
+    hex::encode(hasher.finalize())
 }
 
 // Tests
