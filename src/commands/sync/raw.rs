@@ -27,6 +27,9 @@ use super::Target;
 use super::codegen_write::{seed_web_assets, write_codegen};
 use super::paths::relative_path;
 
+/// Progress label for the decode/normalize/encode pass.
+const TRANSCODE_PHASE: &str = "Transcoding";
+
 pub struct RawPending {
     pub name: String,
     pub path: PathBuf,
@@ -351,9 +354,60 @@ pub async fn process_raw(
     }
 
     // Phase 3: transcode, compress and hash the remainder in parallel.
+    // Dry runs skip transcoding entirely, so there is nothing to report.
+    let transcode_total = if dry_run {
+        0
+    } else {
+        to_process
+            .iter()
+            .filter(|p| p.audio_cache_key.is_some())
+            .count()
+    };
+    if transcode_total > 0 {
+        match audio_options.and_then(|o| o.normalize) {
+            Some(n) => log!(
+                info,
+                "Transcoding {} audio file(s) to OGG Vorbis, normalizing to {} LUFS...",
+                transcode_total,
+                n.target_lufs
+            ),
+            None => log!(
+                info,
+                "Transcoding {} audio file(s) to OGG Vorbis...",
+                transcode_total
+            ),
+        }
+    }
+    let transcoded = std::sync::atomic::AtomicUsize::new(0);
+
     let finished_results: Vec<Result<RawPending, ProcessingError>> = to_process
         .into_par_iter()
-        .map(|prep| finish_raw_file(prep, compress_options, audio_options, dry_run))
+        .map(|prep| {
+            // Only audio carries real processing cost worth reporting; other
+            // raw assets are just a file read.
+            let reporting =
+                (transcode_total > 0 && prep.audio_cache_key.is_some()).then(|| prep.name.clone());
+
+            // Show the bar as soon as work starts, so a single long file isn't
+            // silent while it decodes, measures and re-encodes.
+            if let Some(name) = &reporting {
+                progress(
+                    TRANSCODE_PHASE,
+                    transcoded.load(std::sync::atomic::Ordering::Relaxed),
+                    transcode_total,
+                    name,
+                );
+            }
+
+            let result = finish_raw_file(prep, compress_options, audio_options, dry_run);
+
+            if let Some(name) = &reporting {
+                let done = transcoded.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                progress(TRANSCODE_PHASE, done, transcode_total, name);
+            }
+
+            result
+        })
         .collect::<Vec<_>>();
     for result in finished_results {
         match result {
