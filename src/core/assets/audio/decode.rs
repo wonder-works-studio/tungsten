@@ -73,9 +73,7 @@ pub fn decode(data: &[u8], ext: &str) -> Result<DecodedAudio> {
         let packet = match format.next_packet() {
             Ok(p) => p,
             // End of stream.
-            Err(SymphoniaError::IoError(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
+            Err(SymphoniaError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                 break;
             }
             Err(SymphoniaError::ResetRequired) => break,
@@ -99,9 +97,8 @@ pub fn decode(data: &[u8], ext: &str) -> Result<DecodedAudio> {
             sample_rate = spec.rate;
         }
 
-        let buf = sample_buf.get_or_insert_with(|| {
-            SampleBuffer::<f32>::new(decoded.capacity() as u64, spec)
-        });
+        let buf = sample_buf
+            .get_or_insert_with(|| SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
         if buf.capacity() < decoded.capacity() * spec.channels.count() {
             *buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
         }

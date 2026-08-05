@@ -36,9 +36,7 @@ pub fn transcode_to_ogg(
     let mut pcm = decode(data, ext).context("Failed to decode audio for transcoding")?;
 
     if let Some(normalize_options) = &options.normalize {
-        match normalize(&mut pcm, normalize_options)
-            .context("Failed to normalize loudness")?
-        {
+        match normalize(&mut pcm, normalize_options).context("Failed to normalize loudness")? {
             Some(gain_db) => log!(
                 debug,
                 "Normalized to {} LUFS ({:+.2} dB gain)",
