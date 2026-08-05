@@ -246,6 +246,34 @@ struct ProcessingError {
     error: anyhow::Error,
 }
 
+/// Split prepared assets into those still needing an upload and those already
+/// recorded in the lockfile, returned as `(name, cached_asset_id)` pairs.
+///
+/// Cache hits are pulled out before the progress bar is sized so the counter
+/// reflects real work: adding one sound to a folder of thirty reports `1/1`,
+/// not `31/31`.
+fn split_cached<'a>(
+    pending: &'a [RawPending],
+    input_name: &str,
+    lockfile: &Lockfile,
+    use_cache: bool,
+) -> (Vec<&'a RawPending>, Vec<(String, u64)>) {
+    let mut work: Vec<&RawPending> = Vec::with_capacity(pending.len());
+    let mut cached: Vec<(String, u64)> = Vec::new();
+
+    for p in pending {
+        match use_cache
+            .then(|| lockfile.get(input_name, &p.hash))
+            .flatten()
+        {
+            Some(id) => cached.push((p.name.clone(), id)),
+            None => work.push(p),
+        }
+    }
+
+    (work, cached)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn process_raw(
     input_name: &str,
@@ -303,13 +331,8 @@ pub async fn process_raw(
             .filter(|_| target == Target::Cloud && !dry_run)
             .and_then(|key| lockfile.get(input_name, key).map(|id| (key.clone(), id)));
         match cached {
-            Some((key, id)) => {
-                log!(
-                    debug,
-                    "{}: unchanged, skipping transcode (cached asset {})",
-                    prep.name,
-                    id
-                );
+            // The lockfile hit is reported once, later, by split_cached.
+            Some((key, _id)) => {
                 let meta = AssetMeta::load_for(&prep.path).unwrap_or_default();
                 pending.push(RawPending {
                     display_name: meta.resolve_name(&prep.name).to_string(),
@@ -343,7 +366,29 @@ pub async fn process_raw(
         }
     }
 
-    let total = pending.len();
+    // Serve lockfile hits before sizing the progress bar so it counts only
+    // assets that actually get uploaded this run.
+    let (work, cached) = split_cached(
+        &pending,
+        input_name,
+        lockfile,
+        target == Target::Cloud && !dry_run,
+    );
+
+    for (name, cached_id) in &cached {
+        log!(
+            debug,
+            "{}: unchanged, skipping (cached asset {})",
+            name,
+            cached_id
+        );
+        codegen_entries.push(CodegenEntry::asset_id(name.clone(), *cached_id));
+    }
+    if !cached.is_empty() {
+        log!(info, "{} file(s) unchanged, skipping upload", cached.len());
+    }
+
+    let total = work.len();
 
     // Configure upload concurrency limit from config
     let semaphore = Arc::new(Semaphore::new(max_concurrent_uploads));
@@ -351,7 +396,7 @@ pub async fn process_raw(
     let mut upload_tasks: JoinSet<Result<(String, u64, String)>> = JoinSet::new();
     let mut dispatched = 0usize;
 
-    for p in &pending {
+    for p in work {
         if dry_run {
             dispatched += 1;
             progress("Uploading", dispatched, total, p.name.as_str());
@@ -437,19 +482,7 @@ pub async fn process_raw(
                 codegen_entries.push(CodegenEntry::asset_id(p.name.clone(), fallback_id));
             }
             Target::Cloud => {
-                if let Some(cached_id) = lockfile.get(input_name, &p.hash) {
-                    clear_progress_line();
-                    log!(
-                        debug,
-                        "{}: unchanged, skipping (cached asset {})",
-                        p.name,
-                        cached_id
-                    );
-                    dispatched += 1;
-                    progress("Uploading", dispatched, total, p.name.as_str());
-                    codegen_entries.push(CodegenEntry::asset_id(p.name.clone(), cached_id));
-                    continue;
-                }
+                // Lockfile hits were already resolved by split_cached.
                 let Some(c) = client else {
                     codegen_entries.push(CodegenEntry::asset_id(p.name.clone(), 0));
                     continue;
@@ -540,6 +573,67 @@ mod tests {
     use crate::api::sync::roblox::UserCreator;
     use crate::core::assets::audio::encode::VorbisProfile;
     use crate::core::assets::audio::transcode::tests::{make_wav, sine_samples};
+
+    fn raw_pending(name: &str, hash: &str) -> RawPending {
+        RawPending {
+            name: name.to_string(),
+            path: PathBuf::from(format!("{}.wav", name)),
+            bytes: Vec::new(),
+            hash: hash.to_string(),
+            kind: AssetKind::Audio(AudioFormat::Wav),
+            ext: "wav".to_string(),
+            display_name: name.to_string(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_split_cached_counts_only_new_uploads() {
+        // Two sounds already uploaded, one just added: the progress bar should
+        // be sized 1, not 3.
+        let pending = vec![
+            raw_pending("old_one", "hash_a"),
+            raw_pending("old_two", "hash_b"),
+            raw_pending("brand_new", "hash_c"),
+        ];
+        let mut lockfile = Lockfile::default();
+        lockfile.set("sounds", "hash_a".to_string(), 111);
+        lockfile.set("sounds", "hash_b".to_string(), 222);
+
+        let (work, cached) = split_cached(&pending, "sounds", &lockfile, true);
+
+        assert_eq!(work.len(), 1);
+        assert_eq!(work[0].name, "brand_new");
+        assert_eq!(cached.len(), 2);
+        assert!(cached.contains(&("old_one".to_string(), 111)));
+        assert!(cached.contains(&("old_two".to_string(), 222)));
+    }
+
+    #[test]
+    fn test_split_cached_disabled_treats_everything_as_work() {
+        // Studio, Debug and dry-run targets copy every file every time.
+        let pending = vec![raw_pending("a", "hash_a"), raw_pending("b", "hash_b")];
+        let mut lockfile = Lockfile::default();
+        lockfile.set("sounds", "hash_a".to_string(), 111);
+
+        let (work, cached) = split_cached(&pending, "sounds", &lockfile, false);
+
+        assert_eq!(work.len(), 2);
+        assert!(cached.is_empty());
+    }
+
+    #[test]
+    fn test_split_cached_ignores_other_inputs() {
+        // A matching hash under a different input name must not be reused.
+        let pending = vec![raw_pending("a", "hash_a")];
+        let mut lockfile = Lockfile::default();
+        lockfile.set("other_input", "hash_a".to_string(), 111);
+
+        let (work, cached) = split_cached(&pending, "sounds", &lockfile, true);
+
+        assert_eq!(work.len(), 1);
+        assert!(cached.is_empty());
+    }
 
     #[tokio::test]
     async fn test_cached_audio_skips_transcode_and_reupload() {
