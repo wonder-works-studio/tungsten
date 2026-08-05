@@ -55,6 +55,10 @@ pub struct CodegenConfig {
     /// Whether to generate a sibling `.d.ts` TypeScript definition file
     /// alongside the Luau output. Defaults to `false`.
     pub ts_declaration: Option<bool>,
+    /// Whether to remove whitespace from asset names in the output, so
+    /// `"gold coin.png"` keys as `goldcoin` instead of `["gold coin"]`.
+    /// Defaults to `false`.
+    pub strip_whitespace: Option<bool>,
 }
 
 impl CodegenConfig {
@@ -432,6 +436,7 @@ mod tests {
             style: None,
             strip_extension: None,
             ts_declaration: None,
+            strip_whitespace: None,
         };
         assert_eq!(cfg.resolved_style(), "flat");
     }
@@ -442,6 +447,7 @@ mod tests {
             style: Some("nested".to_string()),
             strip_extension: None,
             ts_declaration: None,
+            strip_whitespace: None,
         };
         assert_eq!(cfg.resolved_style(), "nested");
     }
@@ -547,6 +553,52 @@ mod tests {
         );
         let ts_def = cfg.codegen.as_ref().and_then(|c| c.ts_declaration);
         assert!(ts_def.is_none());
+    }
+
+    #[test]
+    fn test_strip_whitespace_defaults_to_none() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [codegen]
+            style = "flat"
+
+            [inputs.assets]
+            path = "assets/**/*.png"
+            output_path = "src/assets.luau"
+        "#,
+        );
+        let strip = cfg.codegen.as_ref().and_then(|c| c.strip_whitespace);
+        assert!(strip.is_none());
+    }
+
+    #[test]
+    fn test_strip_whitespace_field_parses() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [codegen]
+            style = "flat"
+            strip_extension = true
+            strip_whitespace = true
+
+            [inputs.assets]
+            path = "assets/**/*.png"
+            output_path = "src/assets.luau"
+        "#,
+        );
+        let strip = cfg
+            .codegen
+            .as_ref()
+            .and_then(|c| c.strip_whitespace)
+            .unwrap_or(false);
+        assert!(strip);
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub async fn process_packed(
     codegen_style: &str,
     strip_extension: bool,
     ts_declaration: bool,
+    strip_whitespace: bool,
     compress_options: Option<&CompressOptions>,
     bleed: bool,
     uniform: Option<&pack::UniformOptions>,
@@ -130,6 +131,7 @@ pub async fn process_packed(
                     codegen_style,
                     strip_extension,
                     ts_declaration,
+                    strip_whitespace,
                     &mut errors,
                 );
                 return errors;
@@ -229,6 +231,7 @@ pub async fn process_packed(
         codegen_style,
         strip_extension,
         ts_declaration,
+        strip_whitespace,
         &mut errors,
     );
     errors
@@ -354,6 +357,7 @@ mod tests {
             output_path.to_str().unwrap(),
             "flat",
             true,
+            false,
             false,
             None,
             false,

@@ -286,6 +286,7 @@ pub async fn process_raw(
     codegen_style: &str,
     strip_extension: bool,
     ts_declaration: bool,
+    strip_whitespace: bool,
     compress_options: Option<&CompressOptions>,
     audio_options: Option<&ResolvedAudioOptions>,
     target: Target,
@@ -614,6 +615,7 @@ pub async fn process_raw(
         codegen_style,
         strip_extension,
         ts_declaration,
+        strip_whitespace,
         &mut errors,
     );
     errors
@@ -723,6 +725,7 @@ mod tests {
             "flat",
             true,
             false,
+            false,
             None,
             Some(&options),
             Target::Cloud,
@@ -777,6 +780,7 @@ mod tests {
             output_path.to_str().unwrap(),
             "flat",
             true,
+            false,
             false,
             None,
             Some(&new_options),

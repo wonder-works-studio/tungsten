@@ -162,6 +162,12 @@ pub async fn run(
         .and_then(|c| c.ts_declaration)
         .unwrap_or(false);
 
+    let strip_whitespace = config
+        .codegen
+        .as_ref()
+        .and_then(|c| c.strip_whitespace)
+        .unwrap_or(false);
+
     let max_concurrent_uploads = config.max_concurrent_uploads;
 
     log!(debug, "max_concurrent_uploads={}", max_concurrent_uploads);
@@ -215,6 +221,7 @@ pub async fn run(
                 &codegen_style,
                 strip_extension,
                 ts_declaration,
+                strip_whitespace,
                 compress_opts_ref,
                 audio_opts_ref,
                 target,
@@ -336,6 +343,7 @@ pub async fn run(
                     &codegen_style,
                     strip_extension,
                     ts_declaration,
+                    strip_whitespace,
                     compress_opts_ref,
                     bleed,
                     uniform.as_ref(),
@@ -365,6 +373,7 @@ pub async fn run(
                     &codegen_style,
                     strip_extension,
                     ts_declaration,
+                    strip_whitespace,
                     compress_opts_ref,
                     bleed,
                     target,

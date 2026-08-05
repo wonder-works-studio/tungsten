@@ -25,6 +25,7 @@ pub fn seed_web_assets(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn write_codegen(
     codegen_entries: Vec<CodegenEntry>,
     input_name: &str,
@@ -32,6 +33,7 @@ pub fn write_codegen(
     codegen_style: &str,
     strip_extension: bool,
     ts_declaration: bool,
+    strip_whitespace: bool,
     errors: &mut u32,
 ) {
     use crate::core::postsync::codegen;
@@ -42,6 +44,7 @@ pub fn write_codegen(
         strip_extension,
         output_path,
         ts_declaration,
+        strip_whitespace,
     ) {
         crate::log!(
             warn,

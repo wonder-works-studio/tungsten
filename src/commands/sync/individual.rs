@@ -111,6 +111,7 @@ pub async fn process_individual(
     codegen_style: &str,
     strip_extension: bool,
     ts_declaration: bool,
+    strip_whitespace: bool,
     compress_options: Option<&CompressOptions>,
     bleed: bool,
     target: Target,
@@ -512,6 +513,7 @@ pub async fn process_individual(
         codegen_style,
         strip_extension,
         ts_declaration,
+        strip_whitespace,
         &mut errors,
     );
     errors

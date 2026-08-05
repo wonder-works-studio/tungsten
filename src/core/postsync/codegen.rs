@@ -114,13 +114,22 @@ enum TreeNode<'a> {
 // Public API
 
 pub fn generate(
-    entries: Vec<CodegenEntry>,
+    mut entries: Vec<CodegenEntry>,
     table_name: &str,
     style: &str,
     strip_extension: bool,
     output_path: &str,
     ts_declaration: bool,
+    strip_whitespace: bool,
 ) -> Result<()> {
+    if strip_whitespace {
+        // Strip on the entry names so every downstream key — flat, nested,
+        // Luau and TypeScript alike — sees the same cleaned value.
+        for entry in &mut entries {
+            entry.name = strip_whitespace_from(&entry.name);
+        }
+    }
+
     let luau = generate_luau(&entries, table_name, style, strip_extension);
 
     if let Some(parent) = std::path::Path::new(output_path).parent() {
@@ -185,6 +194,13 @@ pub fn strip_dpi_suffix(stem: &str) -> &str {
 }
 
 // Shared key/tree helpers
+
+/// Remove every whitespace character from an asset name so the generated key
+/// is a plain Luau identifier: `"gold coin.png"` -> `"goldcoin.png"`, which
+/// keys as `Assets.goldcoin` instead of `Assets["gold coin"]`.
+fn strip_whitespace_from(name: &str) -> String {
+    name.chars().filter(|c| !c.is_whitespace()).collect()
+}
 
 fn strip_ext(name: &str) -> &str {
     if let Some(dot) = name.rfind('.') {
@@ -595,6 +611,7 @@ mod tests {
             true,
             "test_dpi_flat.luau",
             false,
+            false,
         )
         .unwrap();
         let c = std::fs::read_to_string("test_dpi_flat.luau").unwrap();
@@ -625,6 +642,7 @@ mod tests {
             true,
             "test_dpi_nested.luau",
             false,
+            false,
         )
         .unwrap();
         let c = std::fs::read_to_string("test_dpi_nested.luau").unwrap();
@@ -645,6 +663,7 @@ mod tests {
             true,
             "test_sounds.luau",
             false,
+            false,
         )
         .unwrap();
         let c = std::fs::read_to_string("test_sounds.luau").unwrap();
@@ -662,6 +681,7 @@ mod tests {
             "nested",
             true,
             "test_sprites.luau",
+            false,
             false,
         )
         .unwrap();
@@ -682,6 +702,7 @@ mod tests {
             true,
             "test_dts_dpi.luau",
             true,
+            false,
         )
         .unwrap();
         let c = std::fs::read_to_string("test_dts_dpi.d.ts").unwrap();
@@ -701,6 +722,112 @@ mod tests {
         assert_eq!(dts_path_for("src/assets.luau"), "src/assets.d.ts");
         assert_eq!(dts_path_for("assets.luau"), "assets.d.ts");
         assert_eq!(dts_path_for("src/assets"), "src/assets.d.ts");
+    }
+
+    // Whitespace stripping
+
+    #[test]
+    fn test_strip_whitespace_from() {
+        assert_eq!(strip_whitespace_from("gold coin.png"), "goldcoin.png");
+        assert_eq!(strip_whitespace_from("  lots   of  gaps "), "lotsofgaps");
+        assert_eq!(strip_whitespace_from("no_gaps.png"), "no_gaps.png");
+        // Tabs and non-breaking spaces count as whitespace too.
+        assert_eq!(strip_whitespace_from("a\tb\u{00a0}c"), "abc");
+    }
+
+    #[test]
+    fn test_luau_strip_whitespace_yields_identifier_keys() {
+        let entries = vec![
+            CodegenEntry::asset_id("gold coin.png".into(), 1),
+            CodegenEntry::asset_id("plain.png".into(), 2),
+        ];
+        generate(
+            entries,
+            "Assets",
+            "flat",
+            true,
+            "test_ws_flat.luau",
+            false,
+            true,
+        )
+        .unwrap();
+        let c = std::fs::read_to_string("test_ws_flat.luau").unwrap();
+        assert!(c.contains("goldcoin = "), "{}", c);
+        assert!(
+            !c.contains("[\"gold coin\"]"),
+            "key should not be quoted: {}",
+            c
+        );
+        assert!(c.contains("plain = "), "{}", c);
+        std::fs::remove_file("test_ws_flat.luau").unwrap();
+    }
+
+    #[test]
+    fn test_luau_keeps_whitespace_when_disabled() {
+        let entries = vec![CodegenEntry::asset_id("gold coin.png".into(), 1)];
+        generate(
+            entries,
+            "Assets",
+            "flat",
+            true,
+            "test_ws_off.luau",
+            false,
+            false,
+        )
+        .unwrap();
+        let c = std::fs::read_to_string("test_ws_off.luau").unwrap();
+        assert!(c.contains("[\"gold coin\"]"), "{}", c);
+        std::fs::remove_file("test_ws_off.luau").unwrap();
+    }
+
+    #[test]
+    fn test_strip_whitespace_applies_to_nested_and_dts() {
+        let entries = vec![CodegenEntry::asset_id("ui folder/gold coin.png".into(), 1)];
+        generate(
+            entries,
+            "Assets",
+            "nested",
+            true,
+            "test_ws_nested.luau",
+            true,
+            true,
+        )
+        .unwrap();
+        let luau = std::fs::read_to_string("test_ws_nested.luau").unwrap();
+        // Path separators survive; only whitespace goes.
+        assert!(luau.contains("uifolder = {"), "{}", luau);
+        assert!(luau.contains("goldcoin = "), "{}", luau);
+
+        let dts = std::fs::read_to_string("test_ws_nested.d.ts").unwrap();
+        assert!(dts.contains("uifolder: {"), "{}", dts);
+        assert!(dts.contains("goldcoin: string"), "{}", dts);
+
+        std::fs::remove_file("test_ws_nested.luau").unwrap();
+        std::fs::remove_file("test_ws_nested.d.ts").unwrap();
+    }
+
+    #[test]
+    fn test_strip_whitespace_applies_to_sprite_keys() {
+        let entries = vec![CodegenEntry::sprite_id(
+            "gold coin.png".into(),
+            42,
+            (0, 0),
+            (16, 16),
+        )];
+        generate(
+            entries,
+            "Icons",
+            "flat",
+            true,
+            "test_ws_sprite.luau",
+            false,
+            true,
+        )
+        .unwrap();
+        let c = std::fs::read_to_string("test_ws_sprite.luau").unwrap();
+        assert!(c.contains("goldcoin = {"), "{}", c);
+        assert!(c.contains("ImageRectOffset"), "{}", c);
+        std::fs::remove_file("test_ws_sprite.luau").unwrap();
     }
 
     // Key quoting

@@ -15,6 +15,7 @@ id = 12345678
 [codegen]
 style = "nested"
 strip_extension = true
+strip_whitespace = true  # Optional: "gold coin.png" keys as goldcoin (default: false)
 ts_declaration = true
 
 # Global upload concurrency (optional, default: 10)
@@ -105,11 +106,32 @@ Defines which Roblox account or group assets are uploaded under.
 
 Controls how Tungsten generates your Luau output files.
 
-| Field             | Type                   | Description                                                               |
-| ----------------- | ---------------------- | ------------------------------------------------------------------------- |
-| `style`           | `"flat"` or `"nested"` | The structure of the generated Luau table, defaults to `"flat"`.          |
-| `strip_extension` | `boolean`              | Whether to strip the file extension from asset keys, defaults to `false`. |
-| `ts_declaration`  | `boolean`              | Whether to generate a TypeScript definition file, defaults to `false`.    |
+| Field              | Type                   | Description                                                                  |
+| ------------------ | ---------------------- | ---------------------------------------------------------------------------- |
+| `style`            | `"flat"` or `"nested"` | The structure of the generated Luau table, defaults to `"flat"`.             |
+| `strip_extension`  | `boolean`              | Whether to strip the file extension from asset keys, defaults to `false`.    |
+| `strip_whitespace` | `boolean`              | Whether to remove whitespace from asset keys, defaults to `false`.           |
+| `ts_declaration`   | `boolean`              | Whether to generate a TypeScript definition file, defaults to `false`.       |
+
+#### Whitespace in asset keys
+
+By default an asset named `gold coin.png` has to be indexed with a quoted key, because the space isn't valid in a Luau identifier:
+
+```luau
+Icons["gold coin"] -- default
+```
+
+Set `strip_whitespace = true` to drop whitespace from generated keys, so the same asset indexes with dot notation:
+
+```luau
+Icons.goldcoin -- with strip_whitespace = true
+```
+
+This applies to folder segments in `nested` style too (`ui folder/close button.png` becomes `Icons.uifolder.closebutton`), and to the generated TypeScript definitions. Source filenames are never touched — only the generated keys.
+
+:::caution
+Turning this on changes existing keys, so any code already indexing an asset by its spaced name needs updating.
+:::
 
 ---
 
