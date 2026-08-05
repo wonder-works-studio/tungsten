@@ -332,8 +332,14 @@ fn resample_to_cell(img: &RgbaImage, cell_w: u32, cell_h: u32, fit: CellFit) -> 
             let tw = ((w as f64 * scale).round() as u32).max(cell_w);
             let th = ((h as f64 * scale).round() as u32).max(cell_h);
             let resized = imageops::resize(img, tw, th, imageops::FilterType::Lanczos3);
-            imageops::crop_imm(&resized, (tw - cell_w) / 2, (th - cell_h) / 2, cell_w, cell_h)
-                .to_image()
+            imageops::crop_imm(
+                &resized,
+                (tw - cell_w) / 2,
+                (th - cell_h) / 2,
+                cell_w,
+                cell_h,
+            )
+            .to_image()
         }
     }
 }
