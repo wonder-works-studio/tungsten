@@ -7,6 +7,7 @@ use toml;
 
 use crate::core::assets::asset::WebAsset;
 use crate::core::assets::audio::encode::VorbisProfile;
+use crate::core::assets::audio::loudness::ResolvedNormalizeOptions;
 use crate::core::assets::audio::transcode::ResolvedAudioOptions;
 use crate::core::assets::img::compress::CompressOptions as ResolvedCompressOptions;
 use crate::log;
@@ -127,6 +128,9 @@ pub struct AudioOptions {
     pub vorbis_quality: Option<f32>,
     /// Target VBR bitrate in kbps. Takes precedence over `vorbis_quality`.
     pub bitrate: Option<u32>,
+    /// If present, normalize loudness before encoding.
+    /// Omit the section entirely to keep source loudness.
+    pub normalize: Option<NormalizeOptions>,
 }
 
 impl AudioOptions {
@@ -136,7 +140,43 @@ impl AudioOptions {
             Some(kbps) => VorbisProfile::Bitrate(kbps),
             None => VorbisProfile::Quality(self.vorbis_quality.unwrap_or(5.0)),
         };
-        ResolvedAudioOptions { profile }
+        ResolvedAudioOptions {
+            profile,
+            normalize: self.normalize.as_ref().map(|n| n.resolve()),
+        }
+    }
+}
+
+/// Loudness normalization settings.
+///
+/// Integrated loudness is measured per EBU R128 / ITU-R BS.1770-4
+/// (K-weighted, gated at -70 LUFS absolute and -10 LU relative) and gain is
+/// applied to hit the target, capped by the true peak ceiling.
+///
+/// Example:
+/// ```toml
+/// [inputs.sounds.audio.normalize]
+/// target_lufs = -14.0
+/// true_peak_ceiling = -1.0
+/// ```
+#[derive(Deserialize, Debug, Clone)]
+pub struct NormalizeOptions {
+    /// Integrated loudness target in LUFS. Defaults to -14.0
+    /// (the common streaming loudness target).
+    pub target_lufs: Option<f64>,
+    /// True peak ceiling in dBTP. Gain is reduced so the output never
+    /// exceeds this, even if that means missing the loudness target.
+    /// Defaults to -1.0.
+    pub true_peak_ceiling: Option<f64>,
+}
+
+impl NormalizeOptions {
+    /// Merge into `ResolvedNormalizeOptions`, filling gaps with defaults.
+    pub fn resolve(&self) -> ResolvedNormalizeOptions {
+        ResolvedNormalizeOptions {
+            target_lufs: self.target_lufs.unwrap_or(-14.0),
+            true_peak_ceiling: self.true_peak_ceiling.unwrap_or(-1.0),
+        }
     }
 }
 
@@ -627,6 +667,75 @@ mod tests {
             opts.profile,
             crate::core::assets::audio::encode::VorbisProfile::Bitrate(96)
         );
+    }
+
+    #[test]
+    fn test_normalize_absent_by_default() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio]
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        assert!(opts.normalize.is_none());
+    }
+
+    #[test]
+    fn test_empty_normalize_section_uses_defaults() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio.normalize]
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        let normalize = opts.normalize.unwrap();
+        assert_eq!(normalize.target_lufs, -14.0);
+        assert_eq!(normalize.true_peak_ceiling, -1.0);
+    }
+
+    #[test]
+    fn test_normalize_custom_levels() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.sounds]
+            path = "assets/sounds/**/*"
+            output_path = "src/sounds.luau"
+
+            [inputs.sounds.audio]
+            vorbis_quality = 6.0
+
+            [inputs.sounds.audio.normalize]
+            target_lufs = -16.0
+            true_peak_ceiling = -2.0
+        "#,
+        );
+        let input = cfg.inputs.get("sounds").unwrap();
+        let opts = input.resolved_audio_options().unwrap();
+        let normalize = opts.normalize.unwrap();
+        assert_eq!(normalize.target_lufs, -16.0);
+        assert_eq!(normalize.true_peak_ceiling, -2.0);
     }
 
     #[test]

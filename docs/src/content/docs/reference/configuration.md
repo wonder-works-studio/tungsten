@@ -56,6 +56,11 @@ output_path = "src/Audio.luau"
 [inputs.audio.audio]
 vorbis_quality = 5.0
 
+# ...and normalize loudness while we're at it
+[inputs.audio.audio.normalize]
+target_lufs = -14.0
+true_peak_ceiling = -1.0
+
 [inputs.models]
 path = "assets/models/**/*"
 output_path = "src/Models.luau"
@@ -152,3 +157,24 @@ An empty `[inputs.<name>.audio]` table enables transcoding with the defaults.
 :::note
 Without this section, WAV, FLAC and M4A files are uploaded as-is — and Roblox rejects them. Tungsten logs a warning when this happens.
 :::
+
+---
+
+### `[inputs.<name>.audio.normalize]`
+
+Enables loudness normalization for a specific input group. Integrated loudness is measured per **EBU R128 / ITU-R BS.1770-4** (K-weighted, gated at −70 LUFS absolute and −10 LU relative) and gain is applied to hit the target.
+
+Roblox does no server-side loudness normalization the way streaming platforms do, so the build tool is the only layer where this can happen. Normalizing at build time makes `Sound.Volume = 1` mean one consistent thing across your entire project — no more hand-tuning volume at dozens of call sites.
+
+| Field               | Type     | Description                                                                                                            |
+| ------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `target_lufs`       | `number` | Integrated loudness target in LUFS. Defaults to `-14.0` (the common streaming loudness target).                          |
+| `true_peak_ceiling` | `number` | True peak ceiling in dBTP. Gain is capped so output never exceeds this, even if the loudness target is missed. Defaults to `-1.0`. |
+
+An empty `[inputs.<name>.audio.normalize]` table enables normalization with the defaults, and implies transcoding: normalization requires decoding to PCM, so OGG sources are re-encoded too (they are otherwise passed through untouched). Streams that are effectively silent (below the −70 LUFS gate) are left unmodified.
+
+Suggested targets:
+
+- `-14.0` — matches Spotify/YouTube loudness; good general default for game audio
+- `-16.0` — slightly more headroom; common for voice-heavy content
+- `-23.0` — EBU R128 broadcast target; conservative, lots of headroom

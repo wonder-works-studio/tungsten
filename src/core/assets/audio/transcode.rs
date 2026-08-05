@@ -1,31 +1,54 @@
 use anyhow::{Context, Result};
 
+use crate::log;
+
 use super::decode::decode;
 use super::encode::{VorbisProfile, encode_ogg};
+use super::loudness::{ResolvedNormalizeOptions, normalize};
 
 /// Resolved audio processing settings for an input.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ResolvedAudioOptions {
     /// Vorbis encoder profile used when re-encoding.
     pub profile: VorbisProfile,
+    /// Loudness normalization settings, if enabled.
+    pub normalize: Option<ResolvedNormalizeOptions>,
 }
 
-/// Transcode an audio file of any supported container to OGG Vorbis.
+/// Transcode an audio file of any supported container to OGG Vorbis,
+/// optionally normalizing loudness on the way through.
 ///
-/// Sources that are already OGG are passed through untouched (`Ok(None)`) to
-/// avoid a pointless lossy re-encode generation. Everything else (WAV, MP3,
-/// M4A/AAC, FLAC) is decoded to PCM via symphonia and re-encoded with
-/// vorbis_rs — pure Rust, no ffmpeg.
+/// Without normalization, sources that are already OGG are passed through
+/// untouched (`Ok(None)`) to avoid a pointless lossy re-encode generation.
+/// With normalization enabled, every source — OGG included — is decoded,
+/// gain-adjusted to the target loudness and re-encoded. Everything else
+/// (WAV, MP3, M4A/AAC, FLAC) is decoded to PCM via symphonia and re-encoded
+/// with vorbis_rs — pure Rust, no ffmpeg.
 pub fn transcode_to_ogg(
     data: &[u8],
     ext: &str,
     options: &ResolvedAudioOptions,
 ) -> Result<Option<Vec<u8>>> {
-    if ext.eq_ignore_ascii_case("ogg") {
+    if ext.eq_ignore_ascii_case("ogg") && options.normalize.is_none() {
         return Ok(None);
     }
 
-    let pcm = decode(data, ext).context("Failed to decode audio for transcoding")?;
+    let mut pcm = decode(data, ext).context("Failed to decode audio for transcoding")?;
+
+    if let Some(normalize_options) = &options.normalize {
+        match normalize(&mut pcm, normalize_options)
+            .context("Failed to normalize loudness")?
+        {
+            Some(gain_db) => log!(
+                debug,
+                "Normalized to {} LUFS ({:+.2} dB gain)",
+                normalize_options.target_lufs,
+                gain_db
+            ),
+            None => log!(debug, "Skipped normalization: stream is silent"),
+        }
+    }
+
     let ogg = encode_ogg(&pcm.samples, pcm.channels, pcm.sample_rate, options.profile)
         .context("Failed to encode OGG Vorbis")?;
     Ok(Some(ogg))
@@ -83,6 +106,7 @@ pub(crate) mod tests {
     fn default_options() -> ResolvedAudioOptions {
         ResolvedAudioOptions {
             profile: VorbisProfile::Quality(5.0),
+            normalize: None,
         }
     }
 
@@ -129,6 +153,7 @@ pub(crate) mod tests {
             "wav",
             &ResolvedAudioOptions {
                 profile: VorbisProfile::Bitrate(64),
+                normalize: None,
             },
         )
         .unwrap()
@@ -138,6 +163,7 @@ pub(crate) mod tests {
             "wav",
             &ResolvedAudioOptions {
                 profile: VorbisProfile::Quality(10.0),
+                normalize: None,
             },
         )
         .unwrap()
@@ -150,5 +176,56 @@ pub(crate) mod tests {
     fn test_garbage_input_errors() {
         let result = transcode_to_ogg(&[0u8; 64], "wav", &default_options());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_normalization_forces_ogg_reencode() {
+        use crate::core::assets::audio::loudness::ResolvedNormalizeOptions;
+
+        let samples = sine_samples(0.5, 44100);
+        let wav = make_wav(&samples, 2, 44100);
+        let ogg = transcode_to_ogg(&wav, "wav", &default_options())
+            .unwrap()
+            .unwrap();
+
+        let options = ResolvedAudioOptions {
+            profile: VorbisProfile::Quality(5.0),
+            normalize: Some(ResolvedNormalizeOptions {
+                target_lufs: -14.0,
+                true_peak_ceiling: -1.0,
+            }),
+        };
+        let result = transcode_to_ogg(&ogg, "ogg", &options).unwrap();
+        assert!(
+            result.is_some(),
+            "normalization requires re-encoding even for ogg sources"
+        );
+    }
+
+    #[test]
+    fn test_transcode_with_normalization_hits_target() {
+        use crate::core::assets::audio::loudness::{ResolvedNormalizeOptions, measure};
+
+        // A quiet source should come out at the loudness target.
+        let samples = sine_samples(0.05, 44100);
+        let wav = make_wav(&samples, 2, 44100);
+
+        let options = ResolvedAudioOptions {
+            profile: VorbisProfile::Quality(5.0),
+            normalize: Some(ResolvedNormalizeOptions {
+                target_lufs: -14.0,
+                true_peak_ceiling: -1.0,
+            }),
+        };
+        let ogg = transcode_to_ogg(&wav, "wav", &options).unwrap().unwrap();
+
+        let decoded = decode(&ogg, "ogg").unwrap();
+        let stats = measure(&decoded).unwrap();
+        // Lossy round-trip wobbles the measurement slightly.
+        assert!(
+            (stats.integrated_lufs - (-14.0)).abs() < 1.0,
+            "integrated = {}",
+            stats.integrated_lufs
+        );
     }
 }
