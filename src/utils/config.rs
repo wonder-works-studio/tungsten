@@ -103,6 +103,26 @@ impl CompressOptions {
     }
 }
 
+/// Cell dimensions for uniform-cell packing.
+/// Accepts either a single number for square cells (`cell_size = 128`)
+/// or a two-element array (`cell_size = [128, 64]`).
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(untagged)]
+pub enum CellSize {
+    Square(u32),
+    Rect([u32; 2]),
+}
+
+impl CellSize {
+    /// Resolved `(width, height)` of a cell.
+    pub fn dims(&self) -> (u32, u32) {
+        match self {
+            CellSize::Square(s) => (*s, *s),
+            CellSize::Rect([w, h]) => (*w, *h),
+        }
+    }
+}
+
 /// Studio-specific configuration.
 #[derive(Deserialize, Default)]
 pub struct StudioConfig {
@@ -148,6 +168,19 @@ pub struct InputConfig {
     pub asset_type: Option<String>,
     /// Pack images into spritesheets. Only applies to image inputs.
     pub packable: Option<bool>,
+    /// Resample every sprite to one exact cell size and pack on a fixed grid,
+    /// so sprite `k` always sits at `(k % columns, k / columns)` and renders
+    /// at identical dimensions regardless of source resolution.
+    /// Only applies to packable inputs. Defaults to `true`.
+    pub uniform_cells: Option<bool>,
+    /// Exact cell dimensions for uniform-cell packing: a single number for
+    /// square cells or a `[width, height]` array. When omitted, the cell is
+    /// sized to the largest sprite width and height across the input.
+    pub cell_size: Option<CellSize>,
+    /// How sprites are resampled into the cell: `"contain"` (default, aspect
+    /// preserved with transparent padding), `"cover"` (aspect preserved,
+    /// overflow cropped), or `"stretch"` (exact fill, aspect ignored).
+    pub cell_fit: Option<String>,
     /// Scale factor applied when rasterizing SVG files (default: 1.0).
     pub svg_scale: Option<f32>,
     /// Whether to apply alpha bleeding to images (default: true).
@@ -254,6 +287,16 @@ impl InputConfig {
     /// Returns whether alpha bleeding should be applied (defaults to true).
     pub fn resolved_bleed(&self) -> bool {
         self.bleed.unwrap_or(true)
+    }
+
+    /// Returns whether uniform-cell packing is enabled (defaults to true).
+    pub fn resolved_uniform_cells(&self) -> bool {
+        self.uniform_cells.unwrap_or(true)
+    }
+
+    /// Returns the configured cell fit policy string (defaults to `"contain"`).
+    pub fn resolved_cell_fit(&self) -> &str {
+        self.cell_fit.as_deref().unwrap_or("contain")
     }
 }
 
@@ -736,6 +779,74 @@ mod tests {
             input.effective_svg_scale(&file, base.to_str().unwrap().replace('\\', "/").as_str());
         // Should fall back to default 1.0
         assert_eq!(scale, 1.0);
+    }
+
+    #[test]
+    fn test_uniform_cells_defaults_to_true() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.icons]
+            path = "assets/**/*"
+            output_path = "src/icons.luau"
+            packable = true
+        "#,
+        );
+        let input = cfg.inputs.get("icons").unwrap();
+        assert!(input.resolved_uniform_cells());
+        assert!(input.cell_size.is_none());
+        assert_eq!(input.resolved_cell_fit(), "contain");
+    }
+
+    #[test]
+    fn test_uniform_cells_can_be_disabled() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.icons]
+            path = "assets/**/*"
+            output_path = "src/icons.luau"
+            packable = true
+            uniform_cells = false
+        "#,
+        );
+        let input = cfg.inputs.get("icons").unwrap();
+        assert!(!input.resolved_uniform_cells());
+    }
+
+    #[test]
+    fn test_cell_size_square_and_rect() {
+        let cfg = parse(
+            r#"
+            [creator]
+            type = "user"
+            id = 1
+
+            [inputs.square]
+            path = "assets/a/**/*"
+            output_path = "src/a.luau"
+            packable = true
+            cell_size = 128
+
+            [inputs.rect]
+            path = "assets/b/**/*"
+            output_path = "src/b.luau"
+            packable = true
+            cell_size = [128, 64]
+            cell_fit = "stretch"
+        "#,
+        );
+        let square = cfg.inputs.get("square").unwrap();
+        assert_eq!(square.cell_size.unwrap().dims(), (128, 128));
+        let rect = cfg.inputs.get("rect").unwrap();
+        assert_eq!(rect.cell_size.unwrap().dims(), (128, 64));
+        assert_eq!(rect.resolved_cell_fit(), "stretch");
     }
 
     #[test]

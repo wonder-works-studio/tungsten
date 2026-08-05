@@ -307,6 +307,22 @@ pub async fn run(
             }
 
             let errs = if input.packable.unwrap_or(false) {
+                let uniform = if input.resolved_uniform_cells() {
+                    let fit = match pack::CellFit::parse(input.resolved_cell_fit()) {
+                        Ok(f) => f,
+                        Err(e) => {
+                            log!(warn, "Invalid cell_fit for \"{}\": {}", input_name, e);
+                            total_errors += 1;
+                            continue;
+                        }
+                    };
+                    Some(pack::UniformOptions {
+                        cell_size: input.cell_size.map(|c| c.dims()),
+                        fit,
+                    })
+                } else {
+                    None
+                };
                 let sheet_meta = load_input_meta(&base_path);
                 let asset_type_override = resolve_asset_type_override(input.asset_type.as_deref());
                 process_packed(
@@ -319,6 +335,7 @@ pub async fn run(
                     ts_declaration,
                     compress_opts_ref,
                     bleed,
+                    uniform.as_ref(),
                     target,
                     dry_run,
                     &creator,

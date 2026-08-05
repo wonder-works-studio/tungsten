@@ -49,6 +49,22 @@ packable = true
 
 If your images put together exceed 1024×1024, Tungsten automatically creates additional sheets (`Sheet_001`, `Sheet_002`, etc.) and generates code that references the correct sheet per sprite.
 
+### Uniform Cells
+
+By default, packed inputs use **uniform cell normalization**: every sprite is resampled to one exact cell size and placed on a fixed grid in name-sorted order. This turns "every icon must be 128×128" from a convention enforced by human review into a tool guarantee — declare it once and a stray oversized export can never ship:
+
+```toml title="tungsten.toml"
+[inputs.ui_icons]
+path = "assets/icons/**/*"
+output_path = "src/IconSheet.luau"
+type = "image"
+packable = true
+cell_size = 128        # optional: defaults to the largest sprite in the input
+cell_fit = "contain"   # optional: contain (default), cover, or stretch
+```
+
+Prefer free-form rect packing (tighter sheets for mixed-size sprites)? Set `uniform_cells = false`.
+
 ## Alpha Bleeding
 
 When sprites are packed into a sheet and scaled in Roblox, transparent edges can show dark fringes from neighboring sprites. Tungsten automatically applies **alpha bleeding** (color expansion into transparent pixels) to prevent this.
