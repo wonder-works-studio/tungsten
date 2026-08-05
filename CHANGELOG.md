@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.2.2]
+
+### Added
+
+- A `Transcoding` progress bar over the audio decode/normalize/encode pass, drawn as soon as work starts so a single long file is no longer silent, plus one info line reporting the file count and the loudness target when normalization is enabled
+
+### Fixed
+
+- Upload progress counted cached assets, so adding one sound to a folder of thirty reported `31/31` uploading when only one file was sent. Lockfile hits are now resolved before the bar is sized, the counter shows `1/1`, and the skipped count is reported once
+- Progress bar columns were padded on already-colorized strings, so the ANSI escape bytes counted toward the field width and no visible padding was emitted — phase and item columns never aligned
+- The completion line was drawn over the longer in-progress line with only a carriage return, leaving that line's tail visible right after the counter (`3/3NeonCitySecretRewardQuiet`)
+- Long item names in the progress bar are truncated on character boundaries, so multi-byte names can no longer be split mid-character
+
 ## [v3.2.1]
 
 ### Fixed
