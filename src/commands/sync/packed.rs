@@ -168,7 +168,7 @@ pub async fn process_packed(
             )
             .collect();
 
-        let mut codegen_entries = Vec::with_capacity(spritesheets.len() * 2);
+        codegen_entries.reserve(spritesheets.len() * 2);
 
         for (idx, result) in processed_sheets.into_iter().enumerate() {
             let processed = match result {
@@ -317,5 +317,69 @@ pub async fn upload_or_copy_sheet(
                 lockfile.get(input_name, hash).unwrap_or(0),
             ))
         }
+    }
+}
+
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::sync::roblox::UserCreator;
+    use image::RgbaImage;
+
+    #[tokio::test]
+    async fn test_dry_run_packed_emits_sprite_codegen_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let output_path = tmp.path().join("icons.luau");
+        let images = vec![
+            pack::InputImage {
+                name: "arrow_up".to_string(),
+                image: RgbaImage::new(8, 8),
+            },
+            pack::InputImage {
+                name: "arrow_down".to_string(),
+                image: RgbaImage::new(8, 8),
+            },
+        ];
+        let mut lockfile = Lockfile::default();
+        let creator = Creator::User(UserCreator {
+            user_id: "1".to_string(),
+        });
+
+        let errors = process_packed(
+            "icons",
+            &AssetMeta::default(),
+            images,
+            output_path.to_str().unwrap(),
+            "flat",
+            true,
+            false,
+            None,
+            false,
+            Target::Debug,
+            true, // dry run: no uploads or copies, codegen only
+            &creator,
+            None,
+            &None,
+            &None,
+            &None,
+            &mut lockfile,
+            &mut None,
+            1,
+            &HashMap::new(),
+            "",
+        )
+        .await;
+
+        assert_eq!(errors, 0);
+        let luau = std::fs::read_to_string(&output_path).unwrap();
+        assert!(
+            luau.contains("ImageRectOffset"),
+            "packed sprites must produce codegen entries, got:\n{}",
+            luau
+        );
+        assert!(luau.contains("arrow_up"), "{}", luau);
+        assert!(luau.contains("arrow_down"), "{}", luau);
     }
 }
