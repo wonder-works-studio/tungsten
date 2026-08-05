@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.2.3]
+
+### Added
+
+- `codegen.strip_whitespace` option that removes whitespace from generated asset keys, so `gold coin.png` indexes as `Icons.goldcoin` instead of `Icons["gold coin"]`. Applies to flat and nested styles, sprite entries, folder segments and the generated TypeScript definitions; source file names are untouched. Defaults to `false`, since enabling it changes existing keys
+
 ## [v3.2.2]
 
 ### Added
