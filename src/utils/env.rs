@@ -51,9 +51,16 @@ pub fn resolve_api_key(flag: Option<String>) -> Option<String> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
+
+    /// Both tests read the shared `.env` path in the working directory, so
+    /// they race when the test harness runs them in parallel. Serialize them.
+    static ENV_FILE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_global_env_var() {
+        let _guard = ENV_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         unsafe { std::env::set_var(GLOBAL_VAR, "test_global_key") };
         let result = resolve_api_key(None);
         unsafe { std::env::remove_var(GLOBAL_VAR) };
@@ -62,6 +69,8 @@ mod tests {
 
     #[test]
     fn test_env_file_parsing() {
+        let _guard = ENV_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // Create a temporary .env file
         let test_content = "TUNGSTEN_API_KEY=test_key_from_env\nOTHER_VAR=value";
         fs::write(".env.test", test_content).unwrap();
@@ -73,12 +82,13 @@ mod tests {
         fs::rename(".env.test", ".env").unwrap();
 
         let result = resolve_api_key(None);
-        assert_eq!(result, Some("test_key_from_env".to_string()));
 
-        // Cleanup
-        fs::rename(".env", ".env.test").unwrap();
+        // Cleanup before asserting so a failure doesn't leave residue behind
+        fs::remove_file(".env").unwrap();
         if fs::metadata(".env.backup").is_ok() {
             fs::rename(".env.backup", ".env").unwrap();
         }
+
+        assert_eq!(result, Some("test_key_from_env".to_string()));
     }
 }
