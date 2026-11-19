@@ -597,7 +597,7 @@ pub async fn process_raw(
             }
             Ok(Err(e)) => {
                 clear_progress_line();
-                log!(warn, "{}", e);
+                log!(warn, "{:#}", e);
                 errors += 1;
             }
             Err(e) => {
