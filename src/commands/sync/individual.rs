@@ -22,14 +22,17 @@ use crate::utils::logger::{clear_progress_line, progress};
 
 use super::Target;
 use super::codegen_write::write_codegen;
-use super::encode::{encode_png, group_dpi_variants};
+use super::encode::{encode_png, group_dpi_variants, image_key};
 use super::paths::relative_path;
 
 struct Pending {
     name: String,
     path: PathBuf,
+    /// Empty when the lockfile already holds this image's upload.
     bytes: Vec<u8>,
     hash: String,
+    /// Hash of the processed bytes, the key versions before 3.3 used.
+    legacy_hash: Option<String>,
     kind: AssetKind,
     display_name: String,
     description: String,
@@ -48,6 +51,10 @@ struct ProcessImageCtx<'a> {
     compress_options: Option<&'a CompressOptions>,
     bleed: bool,
     asset_type: Option<&'a str>,
+    input_name: &'a str,
+    lockfile: &'a Lockfile,
+    /// Cloud sync, not a dry run: a lockfile hit skips processing entirely.
+    use_cache: bool,
 }
 
 /// Process a single image for individual asset processing (synchronous version for parallel processing)
@@ -72,17 +79,23 @@ fn process_single_image_sync(
         .cloned()
         .unwrap_or_else(|| PathBuf::from(&img.name));
 
-    // Process the image: optionally alpha bleed, encode, compress, hash
-    let mut rgba = img.image.clone();
-    if ctx.bleed {
-        alpha_bleed(&mut rgba);
-    }
-    let bytes = encode_png(&rgba).map_err(|e| ProcessingError {
-        error: anyhow::anyhow!("Failed to encode \"{}\": {}", img.name, e),
-    })?;
+    let hash = image_key(&img.source_hash, ctx.bleed, ctx.compress_options);
+    let cached = ctx.use_cache && ctx.lockfile.get(ctx.input_name, &hash).is_some();
 
-    let bytes = maybe_compress_png(bytes, ctx.compress_options);
-    let hash = hash_image(&bytes);
+    let (bytes, legacy_hash) = if cached {
+        (Vec::new(), None)
+    } else {
+        let mut rgba = img.image.clone();
+        if ctx.bleed {
+            alpha_bleed(&mut rgba);
+        }
+        let bytes = encode_png(&rgba).map_err(|e| ProcessingError {
+            error: anyhow::anyhow!("Failed to encode \"{}\": {}", img.name, e),
+        })?;
+        let bytes = maybe_compress_png(bytes, ctx.compress_options);
+        let legacy_hash = hash_image(&bytes);
+        (bytes, Some(legacy_hash))
+    };
     let kind = AssetKind::Image(ImageFormat::Png);
     let meta = AssetMeta::load_for(&path).unwrap_or_default();
     let display_name = meta.resolve_name(&img.name).to_string();
@@ -93,6 +106,7 @@ fn process_single_image_sync(
         path,
         bytes,
         hash,
+        legacy_hash,
         kind,
         display_name,
         description,
@@ -138,6 +152,7 @@ pub async fn process_individual(
 
     // Process plain images in parallel for CPU-bound operations
     let mut pending: Vec<Pending> = Vec::with_capacity(total);
+    let lockfile_view: &Lockfile = lockfile;
     let pending_results: Vec<Result<Pending, ProcessingError>> = plain_images
         .into_par_iter()
         .map(|img| {
@@ -147,6 +162,9 @@ pub async fn process_individual(
                 compress_options,
                 bleed,
                 asset_type,
+                input_name,
+                lockfile: lockfile_view,
+                use_cache: target == Target::Cloud && !dry_run,
             };
             process_single_image_sync(img, &ctx)
         })
@@ -225,7 +243,11 @@ pub async fn process_individual(
                 codegen_entries.push(CodegenEntry::asset_id(p.name.clone(), fallback));
             }
             Target::Cloud => {
-                if let Some(cached_id) = lockfile.get(input_name, &p.hash) {
+                let cached = lockfile.get(input_name, &p.hash).or_else(|| {
+                    let legacy = p.legacy_hash.as_deref()?;
+                    lockfile.adopt_legacy(input_name, legacy, &p.hash)
+                });
+                if let Some(cached_id) = cached {
                     clear_progress_line();
                     log!(
                         debug,
@@ -286,6 +308,7 @@ pub async fn process_individual(
         scale: u8,
         bytes: Vec<u8>,
         hash: String,
+        legacy_hash: String,
     }
 
     // Collect all DPI variants for parallel pre-processing
@@ -314,12 +337,12 @@ pub async fn process_individual(
                 }
             };
             let bytes = maybe_compress_png(bytes, compress_options);
-            let hash = hash_image(&bytes);
             Some(DpiVariantTask {
                 base_name,
                 scale,
+                hash: image_key(&img.source_hash, bleed, compress_options),
+                legacy_hash: hash_image(&bytes),
                 bytes,
-                hash,
             })
         })
         .collect();
@@ -349,7 +372,10 @@ pub async fn process_individual(
         for task in tasks {
             match target {
                 Target::Cloud => {
-                    if let Some(cached) = lockfile.get(input_name, &task.hash) {
+                    let cached = lockfile.get(input_name, &task.hash).or_else(|| {
+                        lockfile.adopt_legacy(input_name, &task.legacy_hash, &task.hash)
+                    });
+                    if let Some(cached) = cached {
                         dispatched += 1;
                         progress("Uploading", dispatched, total, base_name.as_str());
                         codegen_entries.push(CodegenEntry::dpi_group(
@@ -466,7 +492,7 @@ pub async fn process_individual(
             }
             Ok(Err(e)) => {
                 clear_progress_line();
-                log!(warn, "{}", e);
+                log!(warn, "{:#}", e);
                 errors += 1;
             }
             Err(e) => {
@@ -495,7 +521,7 @@ pub async fn process_individual(
             }
             Ok(Err(e)) => {
                 clear_progress_line();
-                log!(warn, "{}", e);
+                log!(warn, "{:#}", e);
                 errors += 1;
             }
             Err(e) => {

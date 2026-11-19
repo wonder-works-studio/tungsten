@@ -3,11 +3,72 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use image::RgbaImage;
 
+use crate::core::assets::img::compress::CompressOptions;
 use crate::core::assets::img::pack;
 use crate::core::postsync::codegen::{parse_dpi_suffix, strip_dpi_suffix};
+use crate::core::postsync::lockfile::hash_parts;
 
 /// Maps a base asset name to its DPI variants: `(scale_factor, image)` pairs.
 pub type DpiGroups = HashMap<String, Vec<(u8, pack::InputImage)>>;
+
+/// Part of every image cache key. Bump it only for a processing change that
+/// should re-upload every image already in the lockfile.
+const IMAGE_KEY_VERSION: &[u8] = b"tungsten-image-v1;";
+
+/// The settings that shape an image's processed bytes.
+fn processing_fingerprint(bleed: bool, compress: Option<&CompressOptions>) -> String {
+    let compress = match compress {
+        Some(c) => format!(
+            "j{},p{},m{}",
+            c.jpeg_quality, c.png_quality, c.keep_metadata
+        ),
+        None => "none".to_string(),
+    };
+    format!("bleed={};compress={};", bleed, compress)
+}
+
+/// Lockfile key for an image uploaded on its own: its source bytes plus the
+/// settings that process it. The processed bytes themselves are not part of
+/// it, since PNG encoding and compression come out differently per machine.
+pub fn image_key(source_hash: &str, bleed: bool, compress: Option<&CompressOptions>) -> String {
+    hash_parts(&[
+        IMAGE_KEY_VERSION,
+        b"single;",
+        processing_fingerprint(bleed, compress).as_bytes(),
+        source_hash.as_bytes(),
+    ])
+}
+
+/// Lockfile key for a packed sheet: the settings plus every sprite's name,
+/// rect and source. Rects are part of it, so a cached sheet is reused only
+/// when this machine lays the sheet out exactly as the upload did.
+pub fn sheet_key(
+    sheet: &pack::Spritesheet,
+    sources: &HashMap<String, String>,
+    bleed: bool,
+    compress: Option<&CompressOptions>,
+    uniform: Option<&pack::UniformOptions>,
+) -> String {
+    let mut layout = format!(
+        "{}uniform={};size={}x{};",
+        processing_fingerprint(bleed, compress),
+        uniform
+            .map(|u| format!("{:?}/{:?}", u.cell_size, u.fit))
+            .unwrap_or_else(|| "none".to_string()),
+        sheet.image.width(),
+        sheet.image.height()
+    );
+    let mut sprites: Vec<&pack::PackedImage> = sheet.images.iter().collect();
+    sprites.sort_by(|a, b| a.name.cmp(&b.name));
+    for s in sprites {
+        let source = sources.get(&s.name).map(String::as_str).unwrap_or("");
+        layout.push_str(&format!(
+            "\n{}\0{},{},{},{}\0{}",
+            s.name, s.x, s.y, s.width, s.height, source
+        ));
+    }
+    hash_parts(&[IMAGE_KEY_VERSION, b"sheet;", layout.as_bytes()])
+}
 
 pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>> {
     use image::ImageEncoder;

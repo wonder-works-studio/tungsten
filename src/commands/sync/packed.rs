@@ -21,7 +21,7 @@ use image::RgbaImage;
 
 use super::Target;
 use super::codegen_write::write_codegen;
-use super::encode::{encode_png, group_dpi_variants};
+use super::encode::{encode_png, group_dpi_variants, sheet_key};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn process_packed(
@@ -113,6 +113,11 @@ pub async fn process_packed(
     if !plain_images.is_empty() {
         log!(info, "Packing {} image(s)...", plain_images.len());
 
+        let sources: HashMap<String, String> = plain_images
+            .iter()
+            .map(|img| (img.name.clone(), img.source_hash.clone()))
+            .collect();
+
         let pack_result = match uniform {
             Some(opts) => pack::pack_uniform(plain_images, opts),
             None => pack::pack(plain_images),
@@ -143,28 +148,40 @@ pub async fn process_packed(
         // Pre-process all sheets: bleed, encode, compress in parallel
         #[derive(Debug)]
         struct ProcessedSheet {
-            _image: RgbaImage,
+            /// Empty when the lockfile already holds this sheet's upload.
             bytes: Vec<u8>,
             hash: String,
+            /// Hash of the processed bytes, the key versions before 3.3 used.
+            legacy_hash: Option<String>,
         }
 
+        let use_cache = target == Target::Cloud && !dry_run;
+        let lockfile_view: &Lockfile = lockfile;
         let processed_sheets: Vec<
             Result<ProcessedSheet, Box<dyn std::error::Error + Send + Sync>>,
         > = spritesheets
             .par_iter()
             .map(
                 |sheet| -> Result<ProcessedSheet, Box<dyn std::error::Error + Send + Sync>> {
+                    let hash = sheet_key(sheet, &sources, bleed, compress_options, uniform);
+                    if use_cache && lockfile_view.get(input_name, &hash).is_some() {
+                        return Ok(ProcessedSheet {
+                            bytes: Vec::new(),
+                            hash,
+                            legacy_hash: None,
+                        });
+                    }
                     let mut sheet_image: RgbaImage = sheet.image.clone();
                     if bleed {
                         alpha_bleed(&mut sheet_image);
                     }
                     let png_bytes: Vec<u8> = encode_png(&sheet_image)?;
                     let png_bytes: Vec<u8> = maybe_compress_png(png_bytes, compress_options);
-                    let hash: String = hash_image(&png_bytes);
+                    let legacy_hash = Some(hash_image(&png_bytes));
                     Ok(ProcessedSheet {
-                        _image: sheet_image,
                         bytes: png_bytes,
                         hash,
+                        legacy_hash,
                     })
                 },
             )
@@ -190,6 +207,7 @@ pub async fn process_packed(
             let asset_ref = match upload_or_copy_sheet(
                 &png_bytes,
                 &hash,
+                processed.legacy_hash.as_deref(),
                 &sheet_name,
                 &sheet_description,
                 input_name,
@@ -207,7 +225,7 @@ pub async fn process_packed(
             {
                 Ok(r) => r,
                 Err(e) => {
-                    log!(warn, "{}", e);
+                    log!(warn, "{:#}", e);
                     errors += 1;
                     continue;
                 }
@@ -241,6 +259,7 @@ pub async fn process_packed(
 pub async fn upload_or_copy_sheet(
     png_bytes: &[u8],
     hash: &str,
+    legacy_hash: Option<&str>,
     sheet_name: &str,
     sheet_description: &str,
     input_name: &str,
@@ -260,7 +279,11 @@ pub async fn upload_or_copy_sheet(
 
     match target {
         Target::Cloud => {
-            if let Some(cached) = lockfile.get(input_name, hash) {
+            let cached = lockfile.get(input_name, hash).or_else(|| {
+                let legacy = legacy_hash?;
+                lockfile.adopt_legacy(input_name, legacy, hash)
+            });
+            if let Some(cached) = cached {
                 clear_progress_line();
                 log!(
                     debug,
@@ -339,10 +362,12 @@ mod tests {
             pack::InputImage {
                 name: "arrow_up".to_string(),
                 image: RgbaImage::new(8, 8),
+                source_hash: String::new(),
             },
             pack::InputImage {
                 name: "arrow_down".to_string(),
                 image: RgbaImage::new(8, 8),
+                source_hash: String::new(),
             },
         ];
         let mut lockfile = Lockfile::default();

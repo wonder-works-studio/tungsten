@@ -17,7 +17,7 @@ use crate::api::sync::studio::StudioSync;
 use crate::api::upload::RobloxClient;
 use crate::core::assets::asset;
 use crate::core::assets::img::{convert, pack};
-use crate::core::postsync::lockfile::Lockfile;
+use crate::core::postsync::lockfile::{Lockfile, hash_parts};
 use crate::log;
 use crate::utils::config::Config;
 use crate::utils::env::resolve_api_key;
@@ -288,9 +288,14 @@ pub async fn run(
                             .into_rgba8();
                         let done = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                         progress("Rasterizing", done, svg_total, &name);
+                        // SVG is text, so git may check it out with CRLF on
+                        // one machine and LF on another.
+                        let text = String::from_utf8_lossy(&data).replace("\r\n", "\n");
+                        let source_hash = hash_parts(&[text.as_bytes(), &scale.to_le_bytes()]);
                         Some(pack::InputImage {
                             name: name.to_string(),
                             image,
+                            source_hash,
                         })
                     })
                     .collect()
