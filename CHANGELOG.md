@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v3.3.0]
+
+### Fixed
+
+- Images re-uploaded with new ids on another machine even though nothing changed: the upload cache keyed images and spritesheets on their compressed PNG bytes, which come out different per OS/CPU. Images now key on their source bytes plus the processing settings, and sheets on their sprites' names, rects and sources. On the first sync, entries under the old keys are carried over whenever this machine reproduces the old bytes, so assets last uploaded from this machine keep their ids
+- `tungsten.lock.toml` was written in hash-map order, so every sync reshuffled the whole file and any two branches that synced conflicted. Entries are now always written sorted; the first sync rewrites an existing lockfile once into that order
+- A lockfile git left with conflict markers (or a union merge that holds one entry twice) failed to parse. It now loads with the entries of both sides and is rewritten clean on the next sync
+- Audio clips shorter than 400 ms skipped loudness normalization ("stream is silent"): integrated loudness has no gating block to measure. They are now measured over the whole clip. Clips already in the lockfile keep their uploads
+- Upload failures logged only "Failed to upload X"; Roblox's status and reply are now shown
+
+### Changed
+
+- Ported from upstream v3.1.1: uploads retry 5xx replies and network timeouts/connection failures with jittered backoff (1–16 s, 5 tries), and a fatal failure cancels in-flight waits immediately
+- Uploads use HTTP/1.1, so concurrent uploads no longer share one HTTP/2 connection where a large body stalls behind the others until Roblox drops it (400 MinRequestBodyDataRate). That 400 and the edge's bare HTML 400 are retried
+- Only a 401/403 stops the whole run now. Any other failed upload fails that asset alone, so uploads Roblox already accepted still get recorded
+- Cached images and sheets skip PNG encoding and compression entirely
+
 ## [v3.2.3]
 
 ### Added
