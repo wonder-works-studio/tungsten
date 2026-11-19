@@ -19,11 +19,17 @@ pub struct ResolvedNormalizeOptions {
 #[derive(Debug, Clone, Copy)]
 pub struct LoudnessStats {
     /// Integrated loudness in LUFS per EBU R128 / ITU-R BS.1770-4
-    /// (K-weighted, gated at -70 LUFS absolute and -10 LU relative).
+    /// (K-weighted, gated at -70 LUFS absolute and -10 LU relative). Clips
+    /// shorter than one gating block get the K-weighted loudness of the whole
+    /// clip instead, since gating them leaves nothing to measure.
     pub integrated_lufs: f64,
     /// Highest true peak across all channels, linear amplitude.
     pub true_peak: f64,
 }
+
+/// Integrated loudness averages 400 ms blocks (BS.1770); a clip shorter than
+/// one block has none and would read as silent.
+const GATING_BLOCK_MS: u64 = 400;
 
 /// Measure integrated loudness and true peak of decoded PCM.
 pub fn measure(pcm: &DecodedAudio) -> Result<LoudnessStats> {
@@ -33,9 +39,22 @@ pub fn measure(pcm: &DecodedAudio) -> Result<LoudnessStats> {
         .add_frames_f32(&pcm.samples)
         .context("Failed to feed samples to loudness meter")?;
 
-    let integrated_lufs = meter
-        .loudness_global()
-        .context("Failed to compute integrated loudness")?;
+    let frames = (pcm.samples.len() / pcm.channels.max(1) as usize) as u64;
+    let rate = pcm.sample_rate as u64;
+    let integrated_lufs = if frames == 0 {
+        f64::NEG_INFINITY
+    } else if frames * 1000 < GATING_BLOCK_MS * rate {
+        // The meter keeps the last 400 ms, so a window rounded up to whole
+        // milliseconds covers the entire clip.
+        let clip_ms = (frames * 1000).div_ceil(rate) as u32;
+        meter
+            .loudness_window(clip_ms)
+            .context("Failed to compute short clip loudness")?
+    } else {
+        meter
+            .loudness_global()
+            .context("Failed to compute integrated loudness")?
+    };
 
     let mut true_peak: f64 = 0.0;
     for ch in 0..pcm.channels {
@@ -194,5 +213,56 @@ mod tests {
         let applied = normalize(&mut pcm, &default_options()).unwrap();
         assert!(applied.is_none());
         assert_eq!(pcm.samples, before, "silent samples must be untouched");
+    }
+
+    /// The first `ms` milliseconds of a stereo 440 Hz sine at 44.1 kHz.
+    fn short_sine(amplitude: f32, ms: usize) -> DecodedAudio {
+        let mut samples = sine_samples(amplitude, 44100);
+        samples.truncate(44100 * ms / 1000 * 2);
+        decoded(samples)
+    }
+
+    #[test]
+    fn test_short_clip_measures_like_a_long_one() {
+        // A steady tone reads the same loudness whatever its length, so a
+        // 150 ms clip must land within a fraction of a dB of a 1 s one.
+        let long = measure(&decoded(sine_samples(0.1, 44100))).unwrap();
+        let short = measure(&short_sine(0.1, 150)).unwrap();
+        assert!(short.integrated_lufs.is_finite(), "{:?}", short);
+        assert!(
+            (short.integrated_lufs - long.integrated_lufs).abs() < 0.5,
+            "short {} vs long {}",
+            short.integrated_lufs,
+            long.integrated_lufs
+        );
+    }
+
+    #[test]
+    fn test_normalize_boosts_short_clips() {
+        for ms in [40, 150, 399] {
+            let mut pcm = short_sine(0.01, ms);
+            let applied = normalize(&mut pcm, &default_options()).unwrap();
+            assert!(
+                applied.is_some_and(|g| g > 20.0),
+                "{} ms clip: applied = {:?}",
+                ms,
+                applied
+            );
+            let stats = measure(&pcm).unwrap();
+            assert!(
+                (stats.integrated_lufs - (-14.0)).abs() < 0.5,
+                "{} ms clip normalized to {}",
+                ms,
+                stats.integrated_lufs
+            );
+        }
+    }
+
+    #[test]
+    fn test_normalize_skips_short_silence() {
+        let mut pcm = decoded(vec![0.0; 4410 * 2]);
+        assert!(normalize(&mut pcm, &default_options()).unwrap().is_none());
+        let mut empty = decoded(Vec::new());
+        assert!(normalize(&mut empty, &default_options()).unwrap().is_none());
     }
 }
