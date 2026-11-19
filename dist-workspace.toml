@@ -15,3 +15,7 @@ targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msv
 checksum = "false"
 # Generate and dist a source tarball
 source-tarball = false
+
+# dist's default arm64 macOS runner (macos-14) is retired on GitHub
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
