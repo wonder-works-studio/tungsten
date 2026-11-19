@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crunch::{Item, Rotation};
 use rayon::prelude::*;
 
+use crate::core::postsync::lockfile::hash_image;
 use crate::log;
 
 /// Maximum width/height of a single spritesheet atlas.
@@ -16,6 +17,9 @@ const MAX_SHEET_SIZE: usize = 1024;
 pub struct InputImage {
     pub name: String,
     pub image: RgbaImage,
+    /// SHA-256 of the source file. Cache keys are built from this rather
+    /// than the processed output, whose bytes depend on the machine.
+    pub source_hash: String,
 }
 
 #[allow(dead_code)]
@@ -76,7 +80,13 @@ pub fn load_images(paths: Vec<PathBuf>, base_path: &str) -> Result<Vec<InputImag
     paths
         .into_par_iter()
         .map(|path| {
-            let image = image::open(&path)
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("Failed to read image \"{}\"", path.display()))?;
+            let decoded = match image::ImageFormat::from_path(&path) {
+                Ok(format) => image::load_from_memory_with_format(&bytes, format),
+                Err(_) => image::load_from_memory(&bytes),
+            };
+            let image = decoded
                 .with_context(|| format!("Failed to open image \"{}\"", path.display()))?
                 .into_rgba8();
 
@@ -87,7 +97,11 @@ pub fn load_images(paths: Vec<PathBuf>, base_path: &str) -> Result<Vec<InputImag
                 .to_string_lossy()
                 .replace('\\', "/");
 
-            Ok(InputImage { name, image })
+            Ok(InputImage {
+                name,
+                image,
+                source_hash: hash_image(&bytes),
+            })
         })
         .collect()
 }
@@ -254,6 +268,7 @@ pub fn pack_uniform(
             InputImage {
                 image: resample_to_cell(&img.image, cell_w, cell_h, options.fit),
                 name: img.name,
+                source_hash: img.source_hash,
             }
         })
         .collect();
@@ -374,6 +389,7 @@ mod tests {
         let inputs = vec![InputImage {
             name: "test-icon".to_string(),
             image: RgbaImage::new(48, 48),
+            source_hash: String::new(),
         }];
 
         let result = pack(inputs).unwrap();
@@ -390,6 +406,7 @@ mod tests {
         let inputs = vec![InputImage {
             name: "test-icon".to_string(),
             image: RgbaImage::new(48, 48),
+            source_hash: String::new(),
         }];
 
         let result = pack(inputs).unwrap();
@@ -403,6 +420,7 @@ mod tests {
         InputImage {
             name: name.to_string(),
             image: RgbaImage::new(w, h),
+            source_hash: String::new(),
         }
     }
 
